@@ -11,18 +11,34 @@ local files.
 pip install -r requirements.txt
 ```
 
-Place your BioScope / SFU Review corpus files under `data/` (or anywhere,
-and point `--bioscope-full-papers` / `--sfu` / `--bioscope-abstracts` at
-them).
+The corpora are used in their original, unmodified distribution formats —
+no preprocessing step is needed. Expected layout under `data/`:
+
+```
+data/
+  abstracts.xml                              # BioScope abstracts (BioScope XML)
+  full_papers.xml                            # BioScope full papers (BioScope XML)
+  SFU_Review_Corpus_Negation_Speculation/    # SFU Review corpus root directory
+    BOOKS/*.xml  CARS/*.xml  COMPUTERS/*.xml  COOKWARE/*.xml
+    HOTELS/*.xml MOVIES/*.xml MUSIC/*.xml     PHONES/*.xml
+```
+
+`--sfu` takes the corpus *directory*, not a file: `Data` walks every
+sub-directory that has no `.` in its name and parses every file inside, so
+the README/PDFs at the SFU root are skipped automatically and all 400
+reviews across the 8 categories are loaded.
 
 ## Run
 
 ```
-python main.py --bioscope-full-papers data/bioscope_full_papers.xml --sfu data/sfu_review_corpus.txt --bioscope-abstracts data/bioscope_abstracts.xml
+python main.py
 ```
 
-All defaults point at `data/<name>`, so if your files are already named and
-placed there you can just run `python main.py`.
+or, if your files live elsewhere:
+
+```
+python main.py --bioscope-full-papers path/full_papers.xml --sfu path/SFU_Review_Corpus_Negation_Speculation --bioscope-abstracts path/abstracts.xml
+```
 
 For scope resolution, pass `--error-analysis` to additionally evaluate the
 trained model on two extra test splits per test dataset: sentences whose

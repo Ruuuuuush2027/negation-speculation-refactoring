@@ -22,15 +22,16 @@ def parse_args():
         description="Train/evaluate negation & speculation cue detection and scope resolution models."
     )
     parser.add_argument(
-        "--bioscope-full-papers", default="data/bioscope_full_papers.xml",
+        "--bioscope-full-papers", default="data/full_papers.xml",
         help="Path to the BioScope full-papers XML file.",
     )
     parser.add_argument(
-        "--sfu", default="data/sfu_review_corpus.txt",
-        help="Path to the SFU Review corpus file.",
+        "--sfu", default="data/SFU_Review_Corpus_Negation_Speculation",
+        help="Path to the SFU Review corpus *directory* (the one containing the "
+             "BOOKS/, CARS/, ... category sub-directories of annotated XML files).",
     )
     parser.add_argument(
-        "--bioscope-abstracts", default="data/bioscope_abstracts.xml",
+        "--bioscope-abstracts", default="data/abstracts.xml",
         help="Path to the BioScope abstracts XML file.",
     )
     parser.add_argument(
