@@ -27,6 +27,17 @@ def pad_sequences(sequences, maxlen, dtype="long", value=0, padding="post", trun
     return np.array(padded, dtype=np.int64)
 
 
+def split_tags(line):
+    """Split one line of annotated XML into alternating text / ``<tag>`` tokens.
+
+    HTML entities are unescaped *after* the split (the notebook unescaped the
+    whole line first), so text like ``p &lt; 0.05`` becomes ``p < 0.05`` as a
+    text token instead of the ``<`` being mistaken for the start of a tag and
+    swallowing the rest of the sentence.
+    """
+    return [html.unescape(token) for token in re.split("(<.*?>)", line)]
+
+
 class Cues:
     def __init__(self, data):
         self.sentences = data[0]
@@ -56,7 +67,7 @@ class Data:
             file = open(f_path, encoding = 'utf-8')
             sentences = []
             for s in file:
-                sentences+=re.split("(<.*?>)", html.unescape(s))
+                sentences += split_tags(s)
             cue_sentence = []
             cue_only_data = []
             negation_cue_cues = []
@@ -170,7 +181,7 @@ class Data:
             file = open(f_path, encoding = 'utf-8')
             sentences = []
             for s in file:
-                sentences+=re.split("(<.*?>)", html.unescape(s))
+                sentences += split_tags(s)
             cue_sentence = []
             negation_cue_cues = []
             speculation_cue_cues = []

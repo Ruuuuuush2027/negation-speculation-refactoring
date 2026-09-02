@@ -108,3 +108,10 @@ config cell from the original notebook.
   skipped with a message instead of crashing on zero batches.
 - `main.py` uses `argparse.BooleanOptionalAction`, so Python 3.9+ is
   required.
+- One deliberate deviation from the notebook's parsing: the corpus files
+  are split into text/tag tokens *before* HTML entities are unescaped
+  (`split_tags` in `data.py`). The notebook unescaped each line first, so a
+  literal `<` in sentence text (BioScope's `p &lt; 0.05` etc.) was treated
+  as the start of a tag and the remainder of that sentence was dropped.
+  Those sentences are now parsed in full. Everything else about the parsing
+  is unchanged.
