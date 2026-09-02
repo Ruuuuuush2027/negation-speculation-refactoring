@@ -24,6 +24,13 @@ python main.py --bioscope-full-papers data/bioscope_full_papers.xml --sfu data/s
 All defaults point at `data/<name>`, so if your files are already named and
 placed there you can just run `python main.py`.
 
+For scope resolution, pass `--error-analysis` to additionally evaluate the
+trained model on two extra test splits per test dataset: sentences whose
+gold scope is delimited by punctuation (`*_punct`) and the rest
+(`*_no_punct`). This is the "Error Analysis" that was left commented out in
+the original notebook. `--no-error-analysis` disables it; with neither flag
+the `ERROR_ANALYSIS_FOR_SCOPE` constant in `config.py` decides.
+
 Training behaviour (subtask, models used, epochs, batch size, etc.) is
 controlled by the constants at the top of `config.py` — this mirrors the
 config cell from the original notebook.
@@ -69,3 +76,19 @@ config cell from the original notebook.
   `use_fast=False` so the word-by-word sub-tokenization behaviour the
   cue/scope tagging logic expects still applies to whichever tokenizer
   `AutoTokenizer` resolves to.
+- `MultiHeadTokenClassifier` re-initializes its two classification heads
+  with `N(0, initializer_range)` weights and zero biases, matching the
+  `init_weights()` call the notebook's vendored model classes performed
+  (rather than PyTorch's default `nn.Linear` init). It also only forwards
+  `token_type_ids` to the encoder when one is given, so backbones without
+  segment embeddings work too.
+- The "Error Analysis" block that was commented out in the notebook is now
+  implemented behind the `--error-analysis` flag. Two bugs in the
+  commented-out code were fixed in the process: the speculation no-punct
+  dataloader variable shadowed the negation one (so speculation would have
+  been evaluated on negation data), and the returned dataloader *lists*
+  were stored where single dataloaders were expected (missing `[0]`,
+  unlike the active test-dataloader code right above it). Empty splits are
+  skipped with a message instead of crashing on zero batches.
+- `main.py` uses `argparse.BooleanOptionalAction`, so Python 3.9+ is
+  required.

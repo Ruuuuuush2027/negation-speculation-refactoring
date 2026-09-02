@@ -33,15 +33,22 @@ def parse_args():
         "--bioscope-abstracts", default="data/bioscope_abstracts.xml",
         help="Path to the BioScope abstracts XML file.",
     )
+    parser.add_argument(
+        "--error-analysis", action=argparse.BooleanOptionalAction, default=ERROR_ANALYSIS_FOR_SCOPE,
+        help="After scope-resolution training, additionally evaluate on test splits whose gold scope "
+             "is delimited by punctuation ('punct') vs. the rest ('no_punct'). "
+             "Defaults to ERROR_ANALYSIS_FOR_SCOPE from config.py.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    error_analysis = args.error_analysis
 
-    bioscope_full_papers_data = Data(args.bioscope_full_papers, dataset_name='bioscope', error_analysis=ERROR_ANALYSIS_FOR_SCOPE)
-    sfu_data = Data(args.sfu, dataset_name='sfu', error_analysis=ERROR_ANALYSIS_FOR_SCOPE)
-    bioscope_abstracts_data = Data(args.bioscope_abstracts, dataset_name='bioscope', error_analysis=ERROR_ANALYSIS_FOR_SCOPE)
+    bioscope_full_papers_data = Data(args.bioscope_full_papers, dataset_name='bioscope', error_analysis=error_analysis)
+    sfu_data = Data(args.sfu, dataset_name='sfu', error_analysis=error_analysis)
+    bioscope_abstracts_data = Data(args.bioscope_abstracts, dataset_name='bioscope', error_analysis=error_analysis)
 
     for run_num in range(NUM_RUNS):
         first_dataset = None
@@ -135,29 +142,30 @@ def main():
                 neg_test_dataloaders['bioscope_abstracts'] = neg_bioscope_abstracts_dl[0]
                 spec_test_dataloaders['bioscope_abstracts'] = spec_bioscope_abstracts_dl[0]
 
-            # # Error Analysis    
-            # if 'sfu' in TEST_DATASETS:
-            #     _, _, [neg_punct_sfu_dl, spec_punct_sfu_dl] = sfu_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
-            #     _, _, [neg_no_punct_sfu_dl, neg_no_punct_sfu_dl] = sfu_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
-            #     neg_punct_test_dataloaders['sfu_punct'] = neg_punct_sfu_dl
-            #     spec_punct_test_dataloaders['sfu_punct'] = spec_punct_sfu_dl
-            #     neg_no_punct_test_dataloaders['sfu_no_punct'] = neg_no_punct_sfu_dl
-            #     spec_no_punct_test_dataloaders['sfu_no_punct'] = neg_no_punct_sfu_dl
-            # if 'bioscope_full_papers' in TEST_DATASETS:
-            #     _, _, [neg_punct_bioscope_full_papers_dl, spec_punct_bioscope_full_papers_dl] = bioscope_full_papers_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
-            #     _, _, [neg_no_punct_bioscope_full_papers_dl, neg_no_punct_bioscope_full_papers_dl] = bioscope_full_papers_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
-            #     neg_punct_test_dataloaders['bioscope_full_papers_punct'] = neg_punct_bioscope_full_papers_dl
-            #     spec_punct_test_dataloaders['bioscope_full_papers_punct'] = spec_punct_bioscope_full_papers_dl
-            #     neg_no_punct_test_dataloaders['bioscope_full_papers_no_punct'] = neg_no_punct_bioscope_full_papers_dl
-            #     spec_no_punct_test_dataloaders['bioscope_full_papers_no_punct'] = neg_no_punct_bioscope_full_papers_dl
-            # if 'bioscope_abstracts' in TEST_DATASETS:
-            #     _, _, [neg_punct_bioscope_abstracts_dl, spec_punct_bioscope_abstracts_dl] = bioscope_abstracts_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
-            #     _, _, [neg_no_punct_bioscope_abstracts_dl, neg_no_punct_bioscope_abstracts_dl] = bioscope_abstracts_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
-            #     neg_punct_test_dataloaders['bioscope_abstracts_punct'] = neg_punct_bioscope_abstracts_dl
-            #     spec_punct_test_dataloaders['bioscope_abstracts_punct'] = spec_punct_bioscope_abstracts_dl
-            #     neg_no_punct_test_dataloaders['bioscope_abstracts_no_punct'] = neg_no_punct_bioscope_abstracts_dl
-            #     spec_no_punct_test_dataloaders['bioscope_abstracts_no_punct'] = neg_no_punct_bioscope_abstracts_dl
-
+            # Error Analysis: build test dataloaders over the punctuation-delimited
+            # ("punct") and remaining ("no_punct") gold-scope sentence splits.
+            if error_analysis:
+                if 'sfu' in TEST_DATASETS:
+                    _, _, [neg_punct_sfu_dl, spec_punct_sfu_dl] = sfu_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
+                    _, _, [neg_no_punct_sfu_dl, spec_no_punct_sfu_dl] = sfu_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
+                    neg_punct_test_dataloaders['sfu_punct'] = neg_punct_sfu_dl[0]
+                    spec_punct_test_dataloaders['sfu_punct'] = spec_punct_sfu_dl[0]
+                    neg_no_punct_test_dataloaders['sfu_no_punct'] = neg_no_punct_sfu_dl[0]
+                    spec_no_punct_test_dataloaders['sfu_no_punct'] = spec_no_punct_sfu_dl[0]
+                if 'bioscope_full_papers' in TEST_DATASETS:
+                    _, _, [neg_punct_bioscope_full_papers_dl, spec_punct_bioscope_full_papers_dl] = bioscope_full_papers_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
+                    _, _, [neg_no_punct_bioscope_full_papers_dl, spec_no_punct_bioscope_full_papers_dl] = bioscope_full_papers_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
+                    neg_punct_test_dataloaders['bioscope_full_papers_punct'] = neg_punct_bioscope_full_papers_dl[0]
+                    spec_punct_test_dataloaders['bioscope_full_papers_punct'] = spec_punct_bioscope_full_papers_dl[0]
+                    neg_no_punct_test_dataloaders['bioscope_full_papers_no_punct'] = neg_no_punct_bioscope_full_papers_dl[0]
+                    spec_no_punct_test_dataloaders['bioscope_full_papers_no_punct'] = spec_no_punct_bioscope_full_papers_dl[0]
+                if 'bioscope_abstracts' in TEST_DATASETS:
+                    _, _, [neg_punct_bioscope_abstracts_dl, spec_punct_bioscope_abstracts_dl] = bioscope_abstracts_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = True)
+                    _, _, [neg_no_punct_bioscope_abstracts_dl, spec_no_punct_bioscope_abstracts_dl] = bioscope_abstracts_data.get_scope_dataloader(test_size = 0.9999999, val_size = 0.00000001, error_analysis = True, punct_dl = False)
+                    neg_punct_test_dataloaders['bioscope_abstracts_punct'] = neg_punct_bioscope_abstracts_dl[0]
+                    spec_punct_test_dataloaders['bioscope_abstracts_punct'] = spec_punct_bioscope_abstracts_dl[0]
+                    neg_no_punct_test_dataloaders['bioscope_abstracts_no_punct'] = neg_no_punct_bioscope_abstracts_dl[0]
+                    spec_no_punct_test_dataloaders['bioscope_abstracts_no_punct'] = spec_no_punct_bioscope_abstracts_dl[0]
 
             if EARLY_STOPPING_METHOD == 'separate':
                 model = ScopeModel_Separate(full_finetuning=True, train=True, learning_rate = INITIAL_LEARNING_RATE)
@@ -174,19 +182,20 @@ def main():
                 model.evaluate(spec_test_dataloaders[k], test_dl_name = k, task = 'speculation')
 
             # Error Analysis
-            if ERROR_ANALYSIS_FOR_SCOPE:
-                for k in neg_punct_test_dataloaders.keys():
-                    print(f"Evaluate on {k}:")
-                    model.evaluate(neg_punct_test_dataloaders[k], test_dl_name = k, task = 'negation')
-                for k in spec_punct_test_dataloaders.keys():
-                    print(f"Evaluate on {k}:")
-                    model.evaluate(spec_punct_test_dataloaders[k], test_dl_name = k, task = 'speculation')
-                for k in neg_no_punct_test_dataloaders.keys():
-                    print(f"Evaluate on {k}:")
-                    model.evaluate(neg_no_punct_test_dataloaders[k], test_dl_name = k, task = 'negation')
-                for k in spec_no_punct_test_dataloaders.keys():
-                    print(f"Evaluate on {k}:")
-                    model.evaluate(spec_no_punct_test_dataloaders[k], test_dl_name = k, task = 'speculation')
+            if error_analysis:
+                analysis_runs = [
+                    (neg_punct_test_dataloaders, 'negation'),
+                    (spec_punct_test_dataloaders, 'speculation'),
+                    (neg_no_punct_test_dataloaders, 'negation'),
+                    (spec_no_punct_test_dataloaders, 'speculation'),
+                ]
+                for dataloaders, task in analysis_runs:
+                    for k in dataloaders.keys():
+                        if len(dataloaders[k].dataset) == 0:
+                            print(f"Skipping {k} ({task}): split contains no sentences.")
+                            continue
+                        print(f"Evaluate on {k}:")
+                        model.evaluate(dataloaders[k], test_dl_name = k, task = task)
             
         else:
             raise ValueError("Unsupported subtask. Supported values are: cue_detection, scope_resolution")
