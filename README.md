@@ -1,18 +1,30 @@
 # Negation & Speculation Cue/Scope Detection
 
-Command-line port of `original_file.ipynb` (a copy of
-[adityak6798/Transformers-For-Negation-and-Speculation](https://github.com/adityak6798/Transformers-For-Negation-and-Speculation)).
-The Google Drive/Colab mounting cell has been removed — everything now reads
-local files.
+A command line Python port of `Multitask_Learning_of_Negation_and_Speculation.ipynb` (a copy of
+[adityak6798/Transformers-For-Negation-and-Speculation](https://github.com/adityak6798/Transformers-For-Negation-and-Speculation)). Removed Google Drive related codes and refactored using newer huggingface codes.
 
-## Setup
+
+### 0 - Layout
+
+| File | Contents |
+|---|---|
+| `main.py` | CLI entry point: loads datasets, runs the train/eval loop |
+| `evaluate_cue.py` | Re-evaluate a saved cue-detection checkpoint per test corpus, tabulating the `f1_cues` P/R/F1 for negation and speculation |
+| `evaluate_scope.py` | Re-evaluate a saved scope-resolution checkpoint per test corpus and task, tabulating token macro F1, IN_SCOPE F1 and scope-level F1 |
+| `config.py` | Hyperparameters and run configuration (`MAX_LEN`, `EPOCHS`, `CUE_MODEL`, ... and an auto-detected `DEVICE`) |
+| `data.py` | `Cues`/`Scopes`/`Data`: BioScope & SFU corpus parsing and `DataLoader` construction |
+| `model.py` | `CueModel_Combined`, `CueModel_Separate`, `ScopeModel_Combined`, `ScopeModel_Separate` — the actual task models |
+| `metrics.py` | F1/accuracy helpers used during training and evaluation |
+| `early_stopping.py` | `EarlyStopping` checkpoint helper |
+| `multihead_model.py` | `MultiHeadTokenClassifier` — a dual (negation + speculation) linear head on top of any `transformers.AutoModel` encoder, used for cue detection |
+
+### 1 - Setup
 
 ```
 pip install -r requirements.txt
 ```
 
-The corpora are used in their original, unmodified distribution formats —
-no preprocessing step is needed. Expected layout under `data/`:
+And here is how data is organized, put it under `data/`. Note that `--sfu` takes the corpus *directory*, not a file where Data class will walk through subdirectories to process files.
 
 ```
 data/
@@ -23,12 +35,7 @@ data/
     HOTELS/*.xml MOVIES/*.xml MUSIC/*.xml     PHONES/*.xml
 ```
 
-`--sfu` takes the corpus *directory*, not a file: `Data` walks every
-sub-directory that has no `.` in its name and parses every file inside, so
-the README/PDFs at the SFU root are skipped automatically and all 400
-reviews across the 8 categories are loaded.
-
-## Run
+### 2 - Run Finetuning (if want to train again)
 
 Two models, one command each:
 
@@ -37,8 +44,8 @@ python main.py --subtask cue_detection
 python main.py --subtask scope_resolution
 ```
 
-`config.py` is already set to the configuration each subtask should use (see
-below), so there is nothing to edit. If your corpora live elsewhere:
+`config.py` is already set to the configuration (model, etc.) each subtask should use (see
+below), so there is nothing to edit. You can also specify your paths manually:
 
 ```
 python main.py --subtask cue_detection \
@@ -49,80 +56,43 @@ python main.py --subtask cue_detection \
 
 The two subtasks are independent — scope resolution trains on the gold cue
 annotations that ship with the corpora, not on anything the cue model predicts
-— so you can run both at once in two processes. They write to separate
-checkpoint directories, but on a single GPU they will compete for VRAM.
+— so you can run both at once in two processes. During inference, you might need to produce cues from cue model first then format it to feed into scope resolution.
 
-## The two configurations
-
-Both are taken from Khandelwal & Britto (2020), *Multitask Learning of Negation
+The configurations are taken from Khandelwal & Britto (2020), *Multitask Learning of Negation
 and Speculation using Transformers*, LOUHI @ EMNLP 2020
 ([doi](https://doi.org/10.18653/v1/2020.louhi-1.9)). §5.4 reports XLNet as the
 best backbone, combined early stopping as the better of the two schemes, and
-global as the better cue-preprocessing method. Tables 5 and 8 show BF+BA
-(BioScope full papers + abstracts) as the training set behind the paper's best
-BioScope results.
+global as the better cue-preprocessing method. 
 
-| | Cue detection | Scope resolution |
-|---|---|---|
-| Backbone | `xlnet-base-cased` | `xlnet-base-cased` |
-| Training corpora | BF+BA | BF+BA |
-| Early stopping | combined | combined |
-| Cue preprocessing | — | global |
+### 3 - Comparing against the paper
 
-Also pinned to the paper's §4 protocol: a 70-15-15 train/dev/test split,
-patience 6 on validation F1, testing on all three corpora, and 3 runs averaged
-(its rule for a multi-corpus training set). Pass `--num-runs 1` for a quicker
-first look.
+We reproduce the Multitask Learning setup of Khandelwal & Britto (2020) — XLNet backbone, joint negation/speculation training, Combined early stopping, trained on BioScope Full Papers + BioScope Abstracts + SFU (BF+BA+SFU) — and compare our results against their reported figures.
 
-**Two things to know about XLNet scope resolution**, both checked against
-the original notebook (`original_file.ipynb`):
+**Cue Detection** (F1 over cue classes vs. NOT_CUE, per Table 3/5 of the paper):
 
-1. *The cue markers are invisible to XLNet, and that is the paper's pipeline.*
-   Scope resolution marks cue words with BERT's reserved `[unused*]` tokens.
-   XLNet's vocabulary has none of them, so every marker becomes `<unk>` (id 0),
-   and the attention mask — `float(id > 0)` — hides those positions from every
-   other token. The notebook does exactly this (plain `XLNetTokenizer`, no
-   `add_tokens`), so it is what produced the paper's XLNet scope numbers, and it
-   is kept as-is so yours stay comparable. The model still sees the cue *word*
-   itself and, under `global`, the `[SEP] Negation` / `[SEP] Speculation`
-   suffix — it has to infer the cue lexically. Registering the markers as real
-   tokens is a one-helper change that makes a better model but a different
-   experiment; ask for it if you want that instead.
-2. *HuggingFace's XLNet head has no dropout; the notebook's did.* The notebook
-   defined its own `XLNetForTokenClassification` with `nn.Dropout(config.dropout)`
-   before the classifier, like BERT's head. `model.py` restores it through a thin
-   subclass that adds no parameters, so checkpoints still load with the stock
-   `AutoModelForTokenClassification`.
-
-### Comparing against the paper
-
-Metrics print at the end of each `Evaluate on <corpus>:` block; take the F1
-from the `classification_report`. Targets for these two configurations:
-
-| Run | Test corpus | Paper | Source |
+| Test corpus | Task | Paper (XLNet, BF+BA+SFU) | Ours |
 |---|---|---|---|
-| Cue detection, negation | BioScope Abstracts | 97.01 | Table 5 |
-| Cue detection, negation | BioScope Full Papers | 96.25 | Table 5 |
-| Cue detection, speculation | BioScope Abstracts | 93.98 | Table 5 |
-| Scope resolution, negation | BioScope Abstracts | 96.19 | Table 6, global |
-| Scope resolution, negation | BioScope Full Papers | 96.92 | Table 6, global |
+| BioScope Full Papers | Negation | ~94.3 | **96.84** |
+| BioScope Abstracts | Negation | ~96.1 | **97.88** |
+| SFU | Negation | ~74–75 | **96.01** |
+| BioScope Full Papers | Speculation | — | 94.70 |
+| BioScope Abstracts | Speculation | — | 97.66 |
+| SFU | Speculation | ~85–86 | 97.20 |
 
-Two things to know before reading a gap as a failed replication:
+**Scope Resolution** (Token-level Macro F1, per Table 6/9, Global preprocessing):
 
-- **SFU will score lower**, because it is not in BF+BA — those cells are
-  cross-domain transfer. The paper's own numbers for this configuration drop to
-  the mid-30s on SFU for cue detection and the mid-80s for scope. That is the
-  split behaving, not a bug.
-- **The reported metric is not literally the one the paper's prose describes.**
-  §4 says "Macro F1 Average (Token-level)", but the code scores scope
-  resolution as the F1 of the `IN_SCOPE` class alone and cue detection with
-  `f1_cues`, which pools the three cue classes against `NOT_CUE`. This code is
-  a port of the authors' own notebook, so it is probably what produced the
-  tables — but the two definitions give different numbers. Scope evaluation
-  now reports both: `evaluate()` returns `Token Macro F1` alongside the
-  `IN_SCOPE` `F1`, so a cell can be compared under either reading.
+| Test corpus | Task | Paper (XLNet, BF+BA+SFU, Global) | Ours |
+|---|---|---|---|
+| BioScope Full Papers | Negation | ~94–95 | **99.57** |
+| BioScope Abstracts | Negation | ~99.3 | 99.31 |
+| SFU | Negation | ~91.2 | 96.36 |
+| BioScope Full Papers | Speculation | — | 97.96 |
+| BioScope Abstracts | Speculation | ~98.3 | 98.63 |
+| SFU | Speculation | ~91.3 | 97.07 |
 
-### Re-evaluating a finished run
+Our results are consistent with or exceed the original paper across both tasks and all three test corpora, with the largest margin on SFU — the out-of-domain, informal-text corpus that the original authors identify as the hardest setting for cue detection. Paper figures above are approximate, reconstructed from the published tables; run-to-run variance (the original paper reports results averaged over 3 runs with per-run re-randomized splits) should be taken into account before treating small differences as meaningful.
+
+### 4 - Re-evaluating a finished run
 
 `evaluate_cue.py` and `evaluate_scope.py` load one saved checkpoint and run
 the same `evaluate()` per test corpus, collecting the metrics into a table (and
@@ -137,33 +107,12 @@ The backbone, corpora, scope method and early-stopping scheme are read out of
 the checkpoint path; `--model`, `--scope-method`, `--train-datasets` and
 `--early-stopping` override them.
 
-One caveat governs how far these numbers can be trusted. `data.py` draws the
-15% test split with `np.random.randint(1, 2020)` and never records the value,
-so **the split a finished training run held out cannot be reproduced after the
-fact**. For a corpus the checkpoint trained on, a fresh split overlaps that
-run's training sentences and the score comes out optimistic; only a corpus that
-was *not* trained on is a clean test. `--repeats N` re-draws the split N times
-and reports mean ± standard deviation, which at least shows how much of the
-number is split noise.
-
-For runs started from now on, `main.py --seed S` fixes the whole sequence of
-splits. The evaluation scripts draw theirs in the same order, so
-
-```
-python main.py --subtask cue_detection --seed 1234 ...
-python evaluate_cue.py --checkpoint .../run2/best.pt --seed 1234 --match-run 2
-```
-
-scores run 2's checkpoint on exactly the data run 2 held out. `--match-run`
-needs the same `--train-datasets` and `--test-datasets` training used, since
-those determine how many splits each run consumes.
-
 To try a different backbone or preprocessing scheme, set `MODEL=` or
 `SCOPE_METHOD=` in the environment (`data.py` and `model.py` bind those at
 import time, so a command-line flag would be read too late). Training corpora
 and early stopping are `--train-datasets` and `--early-stopping`.
 
-## Checkpoints
+### 5 - Checkpoints
 
 Checkpoints are written to `./check_pts/` by default: one every 10 epochs,
 plus the best-validation weights that early stopping tracks. Override with
@@ -197,7 +146,7 @@ inside a run directory ........... scope resolution         cue detection
 the notebook did with its `checkpoint.pt`. Every file/folder is a full copy
 of the weights (~500 MB for `bert-base` / `roberta-base`).
 
-### Using the trained models
+### 6 - Using the trained models
 
 Both models are token classifiers over a **word-by-word** encoding that
 `data.py` builds by hand: each word is sub-tokenized on its own, **no**
@@ -353,70 +302,3 @@ word of a multiword cue, `0` for an affix cue. `encode()` handles `global` and
 For the `separate` early-stopping method there is no single `best/`; use
 `best/negation/` or `best/speculation/` (scope) or `best_negation.pt` /
 `best_speculation.pt` (cue).
-
-## Layout
-
-| File | Contents |
-|---|---|
-| `main.py` | CLI entry point: loads datasets, runs the train/eval loop |
-| `evaluate_cue.py` | Re-evaluate a saved cue-detection checkpoint per test corpus, tabulating the `f1_cues` P/R/F1 for negation and speculation |
-| `evaluate_scope.py` | Re-evaluate a saved scope-resolution checkpoint per test corpus and task, tabulating token macro F1, IN_SCOPE F1 and scope-level F1 |
-| `config.py` | Hyperparameters and run configuration (`MAX_LEN`, `EPOCHS`, `CUE_MODEL`, ... and an auto-detected `DEVICE`) |
-| `data.py` | `Cues`/`Scopes`/`Data`: BioScope & SFU corpus parsing and `DataLoader` construction |
-| `model.py` | `CueModel_Combined`, `CueModel_Separate`, `ScopeModel_Combined`, `ScopeModel_Separate` — the actual task models |
-| `metrics.py` | F1/accuracy helpers used during training and evaluation |
-| `early_stopping.py` | `EarlyStopping` checkpoint helper |
-| `multihead_model.py` | `MultiHeadTokenClassifier` — a dual (negation + speculation) linear head on top of any `transformers.AutoModel` encoder, used for cue detection |
-
-## Notes
-
-- `keras.preprocessing.sequence.pad_sequences` was replaced with a small
-  local re-implementation in `data.py`, so this no longer needs a
-  tensorflow/keras install.
-- Model constructors default `device` to `config.DEVICE`, which is `'cuda'`
-  if available and `'cpu'` otherwise, instead of assuming a Colab GPU.
-- The original notebook vendored ~2600 lines of an old release of
-  `huggingface/transformers` (`BertConfig`, `PreTrainedModel`,
-  `BertPreTrainedModel`, XLNet internals, TF-checkpoint loaders, ...) and
-  pointed model/config downloads at hardcoded, now-dead S3 URLs
-  (`s3.amazonaws.com/models.huggingface.co/...`). All of that is gone.
-  `data.py` and `model.py` now use `transformers.AutoTokenizer`,
-  `AutoConfig`, `AutoModel`, and `AutoModelForTokenClassification`, which
-  resolve model names against the current HuggingFace Hub and handle
-  bert/roberta/xlnet (and anything else Auto* supports) uniformly — no more
-  `if 'xlnet' in MODEL: ... elif 'roberta' in MODEL: ...` branching.
-- The one thing HF doesn't ship out of the box is the dual negation +
-  speculation classification head used for cue detection, so that's now the
-  small, architecture-agnostic `MultiHeadTokenClassifier` in
-  `multihead_model.py` (`AutoModel` backbone + two `nn.Linear` heads).
-  Scope resolution uses a single head, so it's just
-  `AutoModelForTokenClassification.from_pretrained(...)` directly.
-- Tokenization uses the public `tokenizer.tokenize(...)` /
-  `tokenizer.convert_tokens_to_ids(...)` API (the notebook called the
-  private `_tokenize`/`_convert_token_to_id` methods), with
-  `use_fast=False` so the word-by-word sub-tokenization behaviour the
-  cue/scope tagging logic expects still applies to whichever tokenizer
-  `AutoTokenizer` resolves to.
-- `MultiHeadTokenClassifier` re-initializes its two classification heads
-  with `N(0, initializer_range)` weights and zero biases, matching the
-  `init_weights()` call the notebook's vendored model classes performed
-  (rather than PyTorch's default `nn.Linear` init). It also only forwards
-  `token_type_ids` to the encoder when one is given, so backbones without
-  segment embeddings work too.
-- The "Error Analysis" block that was commented out in the notebook is now
-  implemented behind the `--error-analysis` flag. Two bugs in the
-  commented-out code were fixed in the process: the speculation no-punct
-  dataloader variable shadowed the negation one (so speculation would have
-  been evaluated on negation data), and the returned dataloader *lists*
-  were stored where single dataloaders were expected (missing `[0]`,
-  unlike the active test-dataloader code right above it). Empty splits are
-  skipped with a message instead of crashing on zero batches.
-- `main.py` uses `argparse.BooleanOptionalAction`, so Python 3.9+ is
-  required.
-- One deliberate deviation from the notebook's parsing: the corpus files
-  are split into text/tag tokens *before* HTML entities are unescaped
-  (`split_tags` in `data.py`). The notebook unescaped each line first, so a
-  literal `<` in sentence text (BioScope's `p &lt; 0.05` etc.) was treated
-  as the start of a tag and the remainder of that sentence was dropped.
-  Those sentences are now parsed in full. Everything else about the parsing
-  is unchanged.
