@@ -40,13 +40,39 @@ or, if your files live elsewhere:
 python main.py --bioscope-full-papers path/full_papers.xml --sfu path/SFU_Review_Corpus_Negation_Speculation --bioscope-abstracts path/abstracts.xml
 ```
 
+`SUBTASK` in `config.py` picks which subtask runs; `--subtask` overrides it
+per invocation without editing the file:
+
+```
+python main.py --subtask cue_detection
+python main.py --subtask scope_resolution
+```
+
+The two subtasks are independent: scope resolution is trained on the gold
+cue annotations that come with the corpora, not on anything the cue model
+predicts, and no state is shared between them. So they can be trained
+concurrently, in two processes:
+
+```
+python main.py --subtask cue_detection    > cue.log 2>&1 &
+python main.py --subtask scope_resolution > scope.log 2>&1 &
+```
+
+Their checkpoints land in separate directories (see below), so they will not
+clobber each other. On a single GPU the two processes do compete for VRAM
+and throughput, so check that both models fit before launching them together
+(`CUDA_VISIBLE_DEVICES` picks a different GPU per process if you have more
+than one).
+
 ## Checkpoints
 
 Checkpoints are written to `./check_pts/` by default: one every 10 epochs,
 plus the best-validation weights that early stopping tracks. Override with
 `--checkpoint-dir` / `--checkpoint-every` (`0` = only keep the best), or edit
 `CHECKPOINT_DIR` / `CHECKPOINT_EVERY` in `config.py`. Each run gets its own
-sub-directory. The format depends on the model:
+sub-directory under its subtask — `<checkpoint-dir>/<subtask>/run<N>/` — so a
+cue-detection run never overwrites the scope-resolution run of the same
+number. The format depends on the model:
 
 - **Scope resolution** models are plain HuggingFace models, so they are
   saved as HuggingFace folders (config + weights + tokenizer, with
@@ -57,7 +83,7 @@ sub-directory. The format depends on the model:
   PyTorch `state_dict` files.
 
 ```
-check_pts/run1/                       scope resolution         cue detection
+check_pts/<subtask>/run1/             scope resolution         cue detection
   every N epochs ................... epoch_010/  epoch_020/   epoch_010.pt  epoch_020.pt
   best validation F1 ............... best.pt + best/          best.pt
   ('separate' early stopping) ...... best_negation.pt + best/negation/     best_negation.pt
@@ -84,7 +110,7 @@ text would not give meaningful results.
 import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-ckpt = "check_pts/run1/best"          # or "check_pts/run1/best/negation" for 'separate'
+ckpt = "check_pts/scope_resolution/run1/best"   # .../best/negation for 'separate'
 model = AutoModelForTokenClassification.from_pretrained(ckpt).eval()
 tokenizer = AutoTokenizer.from_pretrained(ckpt, use_fast=False)
 
@@ -121,7 +147,7 @@ from config import CUE_MODEL, CUE_LABELS
 from multihead_model import MultiHeadTokenClassifier
 
 model = MultiHeadTokenClassifier(CUE_MODEL, num_labels=5)
-model.load_state_dict(torch.load("check_pts/run1/best.pt", map_location="cpu"))
+model.load_state_dict(torch.load("check_pts/cue_detection/run1/best.pt", map_location="cpu"))
 model.eval()
 tokenizer = AutoTokenizer.from_pretrained(CUE_MODEL, use_fast=False)
 

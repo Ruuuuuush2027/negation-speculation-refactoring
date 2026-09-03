@@ -38,11 +38,20 @@ def parse_args():
         help="Path to the BioScope abstracts XML file.",
     )
     parser.add_argument(
+        "--subtask", choices=("cue_detection", "scope_resolution"), default=SUBTASK,
+        help="Which subtask to train/evaluate. Defaults to SUBTASK from config.py. "
+             "The two subtasks are independent (scope resolution trains on the corpus' gold "
+             "cues, not on the cue model's predictions), so they can be run concurrently; "
+             "each writes to its own checkpoint sub-directory.",
+    )
+    parser.add_argument(
         "--checkpoint-dir", default=CHECKPOINT_DIR,
-        help="Directory to save checkpoints into. Each run writes to <dir>/run<N>/: a checkpoint "
-             "every --checkpoint-every epochs plus the best-validation weights. Scope models are "
-             "saved as HuggingFace folders (epoch_NNN/, best/); cue models as state_dict files "
-             "(epoch_NNN.pt, best.pt). See README 'Checkpoints' for how to load them.",
+        help="Directory to save checkpoints into. Each run writes to <dir>/<subtask>/run<N>/: a "
+             "checkpoint every --checkpoint-every epochs plus the best-validation weights. The "
+             "<subtask> level keeps a cue-detection run from overwriting a scope-resolution run "
+             "of the same number. Scope models are saved as HuggingFace folders (epoch_NNN/, "
+             "best/); cue models as state_dict files (epoch_NNN.pt, best.pt). See README "
+             "'Checkpoints' for how to load them.",
     )
     parser.add_argument(
         "--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
@@ -61,13 +70,16 @@ def parse_args():
 def main():
     args = parse_args()
     error_analysis = args.error_analysis
+    subtask = args.subtask
 
     bioscope_full_papers_data = Data(args.bioscope_full_papers, dataset_name='bioscope', error_analysis=error_analysis)
     sfu_data = Data(args.sfu, dataset_name='sfu', error_analysis=error_analysis)
     bioscope_abstracts_data = Data(args.bioscope_abstracts, dataset_name='bioscope', error_analysis=error_analysis)
 
     for run_num in range(NUM_RUNS):
-        run_checkpoint_dir = os.path.join(args.checkpoint_dir, f"run{run_num+1}")
+        # Namespaced by subtask so runs of cue detection and scope resolution do not
+        # overwrite each other's run<N> checkpoints.
+        run_checkpoint_dir = os.path.join(args.checkpoint_dir, subtask, f"run{run_num+1}")
         first_dataset = None
         other_datasets = []
         if 'sfu' in TRAIN_DATASETS:
@@ -83,7 +95,7 @@ def main():
             else:
                 other_datasets.append(bioscope_abstracts_data)
 
-        if SUBTASK == 'cue_detection':
+        if subtask == 'cue_detection':
             train_dl, val_dls, test_dls = first_dataset.get_cue_dataloader(other_datasets = other_datasets)
 
             test_dataloaders = {}
@@ -121,7 +133,7 @@ def main():
                 model.evaluate(test_dataloaders[k], test_dl_name = k)
         
             
-        elif SUBTASK == 'scope_resolution':
+        elif subtask == 'scope_resolution':
             train_dl, [neg_val_dl, spec_val_dl], [neg_test_dls, spec_test_dls] = first_dataset.get_scope_dataloader(other_datasets = other_datasets)
         
             neg_test_dataloaders = {}
