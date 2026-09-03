@@ -10,7 +10,7 @@ from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 from sklearn.metrics import classification_report, f1_score
 from tqdm import tqdm
-from transformers import AutoModelForTokenClassification, AutoTokenizer
+from transformers import AutoModelForTokenClassification, AutoTokenizer, XLNetForTokenClassification
 
 from config import (
     CHECKPOINT_DIR,
@@ -35,6 +35,33 @@ def _load_tokenizer(model_name):
     if model_name not in _tokenizer_cache:
         _tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name, use_fast=False)
     return _tokenizer_cache[model_name]
+
+
+class XLNetForTokenClassificationWithDropout(XLNetForTokenClassification):
+    """HuggingFace's XLNetForTokenClassification has no dropout between the
+    encoder and the classifier. The original notebook did not use HuggingFace's
+    head; it defined its own (cell "Our implementation of
+    XLNetForTokenClassification"), which applies nn.Dropout(config.dropout)
+    before the projection -- the same shape as BERT's head. This subclass
+    restores that layer so XLNet scope resolution trains as in the notebook.
+
+    It adds no parameters, so a checkpoint saved from it loads with plain
+    AutoModelForTokenClassification (dropout is inactive at eval time).
+    """
+    def __init__(self, config):
+        super().__init__(config)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None):
+        outputs = self.transformer(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        logits = self.classifier(self.dropout(outputs[0]))
+        return (logits,)
+
+
+def _scope_model_class():
+    """The token-classification class for SCOPE_MODEL: HuggingFace's for every
+    backbone except XLNet, whose head is patched to match the notebook."""
+    return XLNetForTokenClassificationWithDropout if 'xlnet' in SCOPE_MODEL else AutoModelForTokenClassification
 
 
 def save_checkpoint(model, path, model_name):
@@ -393,7 +420,7 @@ class ScopeModel_Combined:
         self.num_labels = 2
         self.scope_method = SCOPE_METHOD
         if train == True:
-            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
+            self.model = _scope_model_class().from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
         else:
             self.model = torch.load(pretrained_model_path)
         self.device = torch.device(device)
@@ -988,8 +1015,8 @@ class ScopeModel_Separate:
         self.num_labels = 2
         self.scope_method = SCOPE_METHOD
         if train == True:
-            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
-            self.model_2 = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
+            self.model = _scope_model_class().from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
+            self.model_2 = _scope_model_class().from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
         else:
             self.model = torch.load(pretrained_model_path)
         self.device = torch.device(device)

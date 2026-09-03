@@ -68,14 +68,19 @@ def runs_for(train_datasets):
 # ---------------------------------------------------------------------------
 # What this invocation runs
 # ---------------------------------------------------------------------------
-# Backbones: the paper's best *runnable* configuration per subtask. XLNet for
-# cue detection (Table 5, and Section 5.4: it "consistently outperforms RoBERTa
-# and BERT"). BERT for scope, because scope marks cues with [unused*] tokens
-# that only BERT-family vocabularies contain -- see README "The two
-# configurations". Set MODEL to pin both at once.
+# Backbone: XLNet for both subtasks, the paper's best (Table 5, Tables 8/11,
+# and Section 5.4: it "consistently outperforms RoBERTa and BERT"). Set MODEL
+# to change both at once, or CUE_MODEL / SCOPE_MODEL individually.
+#
+# Scope resolution marks cue words with BERT's reserved [unused*] tokens. XLNet
+# and RoBERTa vocabularies do not contain them, so under those backbones every
+# marker maps to <unk> (for XLNet: id 0, which the attention mask then hides
+# from the other tokens). This is exactly how the original notebook -- and so
+# the paper -- ran XLNet scope resolution, and it is left as-is on purpose so
+# that results stay comparable. See README "The two configurations".
 MODEL = _env('MODEL', None)
 CUE_MODEL = _env('CUE_MODEL', MODEL or PAPER_MODELS['xlnet'])
-SCOPE_MODEL = _env('SCOPE_MODEL', MODEL or PAPER_MODELS['bert'])
+SCOPE_MODEL = _env('SCOPE_MODEL', MODEL or PAPER_MODELS['xlnet'])
 
 # Cue-marker preprocessing scheme (paper Section 3.2). Section 5.4: "the global
 # preprocessing method outperforms the local preprocessing method" (Table 12).
@@ -90,7 +95,7 @@ SUBTASK = 'scope_resolution'  # Options: cue_detection, scope_resolution
 EARLY_STOPPING_METHOD = 'combined'  # Options: combined, separate
 # BF+BA is the training combination behind the paper's best BioScope results
 # for both subtasks (Tables 5 and 8).
-TRAIN_DATASETS = ['bioscope_full_papers', 'bioscope_abstracts']
+TRAIN_DATASETS = ['bioscope_full_papers', 'bioscope_abstracts', 'sfu']
 TEST_DATASETS = list(PAPER_TEST_DATASETS)
 NUM_RUNS = runs_for(TRAIN_DATASETS)
 

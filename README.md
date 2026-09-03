@@ -64,7 +64,7 @@ BioScope results.
 
 | | Cue detection | Scope resolution |
 |---|---|---|
-| Backbone | `xlnet-base-cased` | `bert-base-uncased` |
+| Backbone | `xlnet-base-cased` | `xlnet-base-cased` |
 | Training corpora | BF+BA | BF+BA |
 | Early stopping | combined | combined |
 | Cue preprocessing | — | global |
@@ -74,34 +74,45 @@ patience 6 on validation F1, testing on all three corpora, and 3 runs averaged
 (its rule for a multi-corpus training set). Pass `--num-runs 1` for a quicker
 first look.
 
-**Scope resolution uses BERT rather than XLNet on purpose.** The paper's best
-scope models are XLNet too, but scope resolution marks cue words with the
-reserved WordPiece tokens `[unused1]`-`[unused8]`, which exist only in
-BERT-family vocabularies. Under `xlnet-base-cased` all of them map to id 0,
-which is both `<unk>` and the id the attention mask treats as padding, so the
-markers are dropped entirely; under `roberta-base` they all collapse to
-`<unk>`. BERT is the best backbone that actually works here, and BERT (BF+BA,
-global) is a headline result in its own right — 97.40 in Table 8. Cue
-detection injects no markers, so XLNet is fine there.
+**Two things to know about XLNet scope resolution**, both checked against
+the original notebook (`original_file.ipynb`):
+
+1. *The cue markers are invisible to XLNet, and that is the paper's pipeline.*
+   Scope resolution marks cue words with BERT's reserved `[unused*]` tokens.
+   XLNet's vocabulary has none of them, so every marker becomes `<unk>` (id 0),
+   and the attention mask — `float(id > 0)` — hides those positions from every
+   other token. The notebook does exactly this (plain `XLNetTokenizer`, no
+   `add_tokens`), so it is what produced the paper's XLNet scope numbers, and it
+   is kept as-is so yours stay comparable. The model still sees the cue *word*
+   itself and, under `global`, the `[SEP] Negation` / `[SEP] Speculation`
+   suffix — it has to infer the cue lexically. Registering the markers as real
+   tokens is a one-helper change that makes a better model but a different
+   experiment; ask for it if you want that instead.
+2. *HuggingFace's XLNet head has no dropout; the notebook's did.* The notebook
+   defined its own `XLNetForTokenClassification` with `nn.Dropout(config.dropout)`
+   before the classifier, like BERT's head. `model.py` restores it through a thin
+   subclass that adds no parameters, so checkpoints still load with the stock
+   `AutoModelForTokenClassification`.
 
 ### Comparing against the paper
 
 Metrics print at the end of each `Evaluate on <corpus>:` block; take the F1
-from the `classification_report`. Targets for these two configurations, from
-the paper's "Ours (Jointly Trained)" rows:
+from the `classification_report`. Targets for these two configurations:
 
 | Run | Test corpus | Paper | Source |
 |---|---|---|---|
 | Cue detection, negation | BioScope Abstracts | 97.01 | Table 5 |
 | Cue detection, negation | BioScope Full Papers | 96.25 | Table 5 |
 | Cue detection, speculation | BioScope Abstracts | 93.98 | Table 5 |
-| Scope resolution, negation | BioScope Full Papers | 97.40 | Table 8 |
+| Scope resolution, negation | BioScope Abstracts | 96.19 | Table 6, global |
+| Scope resolution, negation | BioScope Full Papers | 96.92 | Table 6, global |
 
 Two things to know before reading a gap as a failed replication:
 
-- **SFU will score badly**, because it is not in BF+BA — those cells are
-  cross-domain transfer, and the paper's own numbers for this configuration
-  drop to the mid-30s on SFU. That is the split behaving, not a bug.
+- **SFU will score lower**, because it is not in BF+BA — those cells are
+  cross-domain transfer. The paper's own numbers for this configuration drop to
+  the mid-30s on SFU for cue detection and the mid-80s for scope. That is the
+  split behaving, not a bug.
 - **The reported metric is not literally the one the paper's prose describes.**
   §4 says "Macro F1 Average (Token-level)", but the code scores scope
   resolution as the F1 of the `IN_SCOPE` class alone and cue detection with
@@ -125,7 +136,7 @@ directory, named for the configuration that produced it, so the two subtasks
 
 ```
 check_pts/cue_detection/xlnet-base-cased_BF+BA_combined/run1/
-check_pts/scope_resolution/bert-base-uncased_BF+BA_global_combined/run1/
+check_pts/scope_resolution/xlnet-base-cased_BF+BA_global_combined/run1/
 ```
 
 The format depends on the model:
@@ -161,26 +172,41 @@ import numpy as np
 import torch
 
 
-def encode(words, tokenizer, lower, cues=None, task=None):
-    """Encode a pre-tokenized sentence the way data.py does.
+def encode(words, tokenizer, lower, cues=None, task=None, scope_method="global"):
+    """Encode a pre-tokenized sentence exactly the way data.py does.
 
     cues: {word index: cue label} -- 0 affix, 1 single-word, 2 multiword.
-          Only for scope resolution; a [unused{label+1}] marker is inserted
-          in front of the cue word and takes over its word slot.
-    task: "Negation" or "Speculation", appended after a literal "[SEP]".
-          Only for scope resolution with SCOPE_METHOD='global'.
+          Scope only. A [unused*] marker is inserted in front of EVERY
+          sub-token of a cue word (data.py's loop runs over sub-tokens, not
+          words); all of them belong to that word's slot.
+    task: "Negation" or "Speculation". Scope only. Under 'global' it is
+          appended after a literal "[SEP]" and both tasks use
+          [unused{label+1}]; under 'local' there is no suffix, negation uses
+          [unused{label+1}] and speculation uses [unused{label+6}] for the
+          first cue sub-token, then [unused{label+1}].
     Returns the input ids and, for each id, which word it belongs to.
     """
-    seq = list(words) if task is None else list(words) + ["[SEP]", task]
     cues = cues or {}
+    seq = list(words)
+    if task is not None and scope_method == "global":
+        seq += ["[SEP]", task]
     ids, word_of = [], []
+    first = True                         # first sub-token of the current cue run
     for w, word in enumerate(seq):
+        subs = tokenizer.tokenize(word.lower() if lower else word)
         if w in cues:
-            ids.append(tokenizer.convert_tokens_to_ids(f"[unused{cues[w] + 1}]"))
-            word_of.append(w)
-        for sub in tokenizer.tokenize(word.lower() if lower else word):
-            ids.append(tokenizer.convert_tokens_to_ids(sub))
-            word_of.append(w)
+            for sub in subs:
+                off = 6 if (scope_method == "local" and task == "Speculation" and first) else 1
+                ids.append(tokenizer.convert_tokens_to_ids(f"[unused{cues[w] + off}]"))
+                word_of.append(w)
+                ids.append(tokenizer.convert_tokens_to_ids(sub))
+                word_of.append(w)
+                first = False
+        else:
+            first = True
+            for sub in subs:
+                ids.append(tokenizer.convert_tokens_to_ids(sub))
+                word_of.append(w)
     return ids, word_of
 
 
@@ -192,10 +218,13 @@ def per_word(logits, word_of, n_words):
     ]
 ```
 
-Note the marker is inserted *after* lower-casing, so `[unused2]` keeps its case
-while the appended `[SEP] Negation` is lower-cased to `[sep] negation` and
-sub-tokenized as ordinary text — it is not the real `[SEP]` special token.
-Both helpers above reproduce `data.py`'s token ids exactly.
+The appended `[SEP] <task>` is ordinary text: it goes through the same
+lower-casing (for an `uncased` model) and sub-tokenization as the sentence, and
+is not the tokenizer's special `[SEP]` token. The marker string is never
+lower-cased. Build the attention mask as `(input_ids > 0)` — that is what
+training used, and under XLNet it is what hides the `<unk>` markers. `encode()`
+has been checked against `data.py` on every scope row of the BioScope
+full-papers corpus under XLNet and BERT, `global` and `local`.
 
 #### Cue detection (default config: XLNet, BF+BA, combined)
 
@@ -222,7 +251,7 @@ ids, word_of = encode(words, tokenizer, lower)
 
 input_ids = torch.tensor([ids])
 with torch.no_grad():
-    logits_neg, logits_spec = model(input_ids, attention_mask=torch.ones_like(input_ids))[0]
+    logits_neg, logits_spec = model(input_ids, attention_mask=(input_ids > 0).long())[0]
 
 neg = per_word(logits_neg[0].numpy(), word_of, len(words))
 spec = per_word(logits_spec[0].numpy(), word_of, len(words))
@@ -239,10 +268,12 @@ Label 4 is the padding label and carries a class weight of 0 during training,
 so the model is never trained to predict it and never trained not to — if it
 turns up on a real word, treat it as "no cue" rather than as a prediction.
 
-#### Scope resolution (default config: BERT, BF+BA, global, combined)
+#### Scope resolution (default config: XLNet, BF+BA, global, combined)
 
-The scope model is a stock `AutoModelForTokenClassification`, saved as a
-HuggingFace folder. It resolves the scope of **one cue at a time**: you tell it
+The scope model is saved as a HuggingFace folder and loads with the stock
+`AutoModelForTokenClassification` (XLNet is *trained* through a subclass that
+only adds dropout — see "The two configurations" — so nothing changes at load
+time). It resolves the scope of **one cue at a time**: you tell it
 where the cue is and which phenomenon you are asking about, and it labels every
 word `IN_SCOPE` / `OUT_OF_SCOPE`. Feed it the cues the model above found, or
 gold cues.
@@ -251,23 +282,22 @@ gold cues.
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 from config import SCOPE_MODEL, SCOPE_METHOD
 
-CKPT = "check_pts/scope_resolution/bert-base-uncased_BF+BA_global_combined/run1/best"
+CKPT = "check_pts/scope_resolution/xlnet-base-cased_BF+BA_global_combined/run1/best"
 
 model = AutoModelForTokenClassification.from_pretrained(CKPT).eval()
 tokenizer = AutoTokenizer.from_pretrained(CKPT, use_fast=False)
-lower = "uncased" in SCOPE_MODEL         # bert-base-uncased -> True
+lower = "uncased" in SCOPE_MODEL         # xlnet-base-cased -> False
 
 words = ("They analyzed 146 prokaryotic genomes , but no likely tRNA "
          "of the novel amino acid was detected .").split()
 cues = {7: 1}                            # "no" is a single-word cue
 task = "Negation"                        # or "Speculation"
 
-ids, word_of = encode(words, tokenizer, lower, cues=cues,
-                      task=task if SCOPE_METHOD == "global" else None)
+ids, word_of = encode(words, tokenizer, lower, cues=cues, task=task, scope_method=SCOPE_METHOD)
 
 input_ids = torch.tensor([ids])
 with torch.no_grad():
-    logits = model(input_ids, attention_mask=torch.ones_like(input_ids)).logits[0].numpy()
+    logits = model(input_ids, attention_mask=(input_ids > 0).long()).logits[0].numpy()
 
 n_words = len(words) + (2 if SCOPE_METHOD == "global" else 0)
 pred = per_word(logits, word_of, n_words)[:len(words)]   # drop the "[SEP] Negation" suffix
@@ -279,11 +309,8 @@ print(" ".join(w.upper() if p == 1 else w for w, p in zip(words, pred)))
 ```
 
 The `cues` labels match `CUE_LABELS`: `1` for a single-word cue, `2` on **every**
-word of a multiword cue, `0` for an affix cue. Under `SCOPE_METHOD='global'`
-both phenomena use the same `[unused{label+1}]` markers and the task is carried
-by the appended text, so pass `task=`. Under `'local'` the task is carried by
-the marker id instead (speculation uses `[unused{label+6}]`), so drop the `task`
-argument and adjust the marker accordingly.
+word of a multiword cue, `0` for an affix cue. `encode()` handles `global` and
+`local` itself via `scope_method`; always pass `task=`.
 
 For the `separate` early-stopping method there is no single `best/`; use
 `best/negation/` or `best/speculation/` (scope) or `best_negation.pt` /
