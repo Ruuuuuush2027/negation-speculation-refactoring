@@ -1,2 +1,4 @@
 data/*
 check_pts/*
+*.job
+__pycache__/
