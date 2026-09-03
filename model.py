@@ -1,5 +1,7 @@
 """Cue detection and scope resolution models (combined vs. separate
 early-stopping variants), built on top of the Bert/Roberta/XLNet backbones."""
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -8,12 +10,65 @@ from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 from sklearn.metrics import classification_report, f1_score
 from tqdm import tqdm
-from transformers import AutoModelForTokenClassification
+from transformers import AutoModelForTokenClassification, AutoTokenizer
 
-from config import CUE_MODEL, DEVICE, SCOPE_MODEL, SCOPE_METHOD, SUBTASK
+from config import (
+    CHECKPOINT_DIR,
+    CHECKPOINT_EVERY,
+    CUE_MODEL,
+    DEVICE,
+    SCOPE_LABELS,
+    SCOPE_MODEL,
+    SCOPE_METHOD,
+    SUBTASK,
+)
 from early_stopping import EarlyStopping
 from metrics import f1_cues, f1_scope, flat_accuracy, flat_accuracy_positive_cues, report_per_class_accuracy, scope_accuracy
 from multihead_model import MultiHeadTokenClassifier
+
+
+_tokenizer_cache = {}
+
+
+def _load_tokenizer(model_name):
+    """The (slow, as used in data.py) tokenizer saved alongside scope checkpoints."""
+    if model_name not in _tokenizer_cache:
+        _tokenizer_cache[model_name] = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+    return _tokenizer_cache[model_name]
+
+
+def save_checkpoint(model, path, model_name):
+    """Save a checkpoint of `model` at `path` (given without extension).
+
+    * Scope models are plain HuggingFace models, so they are saved as a
+      HuggingFace folder `<path>/` (config + weights + tokenizer), loadable
+      with `AutoModelForTokenClassification.from_pretrained(path)`.
+    * Cue models are the custom two-headed `MultiHeadTokenClassifier`, which
+      HuggingFace cannot load, so their `state_dict` goes to `<path>.pt`, to be
+      loaded with `MultiHeadTokenClassifier(...).load_state_dict(torch.load(...))`.
+    """
+    if isinstance(model, MultiHeadTokenClassifier):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        torch.save(model.state_dict(), path + ".pt")
+        print(f"Saved checkpoint to {path}.pt")
+    else:
+        model.save_pretrained(path)
+        _load_tokenizer(model_name).save_pretrained(path)
+        print(f"Saved checkpoint to {path}/")
+
+
+def save_best_checkpoint(model, checkpoint_dir, model_name, task=None):
+    """Called at the end of training with the best-validation weights loaded.
+
+    Early stopping already saved those weights as a state_dict (`best.pt`, or
+    `best_negation.pt` / `best_speculation.pt`), which is the final checkpoint
+    for cue models. Scope models are additionally saved as a HuggingFace folder
+    `best/` (`best/<task>/` for the 'separate' early-stopping method).
+    """
+    if isinstance(model, MultiHeadTokenClassifier):
+        return
+    path = os.path.join(checkpoint_dir, 'best') if task is None else os.path.join(checkpoint_dir, 'best', task)
+    save_checkpoint(model, path, model_name)
 
 class CueModel_Combined:
     def __init__(self, full_finetuning = True, train = False, pretrained_model_path = 'Cue_Detection.pickle', device = DEVICE, learning_rate = 3e-5, class_weight = [100, 100, 100, 1, 0], num_labels = 5):
@@ -47,7 +102,7 @@ class CueModel_Combined:
             optimizer_grouped_parameters = [{"params": [p for n, p in param_optimizer]}]
         self.optimizer = Adam(optimizer_grouped_parameters, lr=learning_rate)
 
-    def train(self, train_dataloader, valid_dataloaders, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3):
+    def train(self, train_dataloader, valid_dataloaders, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3, checkpoint_dir = CHECKPOINT_DIR, checkpoint_every = CHECKPOINT_EVERY):
         
         self.train_dl_name = train_dl_name
         return_dict = {"Task": f"Multidata Cue Detection",
@@ -59,11 +114,13 @@ class CueModel_Combined:
                        "Best F1": 0}
         train_loss = []
         valid_loss = []
-        early_stopping = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint.pt')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        best_path = os.path.join(checkpoint_dir, 'best.pt')
+        early_stopping = EarlyStopping(patience=patience, verbose=True, save_path = best_path)
         #early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint2.pt')
         loss_fn_neg = CrossEntropyLoss(weight=torch.Tensor(self.class_weight).to(self.device))
         loss_fn_spec = CrossEntropyLoss(weight=torch.Tensor(self.class_weight).to(self.device))
-        for _ in tqdm(range(epochs), desc="Epoch"):
+        for epoch in tqdm(range(1, epochs + 1), desc="Epoch"):
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -90,6 +147,8 @@ class CueModel_Combined:
                 self.optimizer.step()
                 self.model.zero_grad()
             print("Train loss: {}".format(tr_loss/nb_tr_steps))
+            if checkpoint_every and epoch % checkpoint_every == 0:
+                save_checkpoint(self.model, os.path.join(checkpoint_dir, f"epoch_{epoch:03d}"), self.model_name)
             
             self.model.eval()
             eval_loss, eval_accuracy, eval_scope_accuracy, eval_positive_cue_accuracy = 0, 0, 0, 0
@@ -239,8 +298,8 @@ class CueModel_Combined:
             pred_flat = [int(i!=3) for i in pred_flat]
             print("F1-Score Cue_No Cue: {}".format(f1_score(labels_flat,pred_flat, average='weighted')))'''
             
-        self.model.load_state_dict(torch.load('checkpoint.pt'))
-        #self.model_2.load_state_dict(torch.load('checkpoint2.pt'))
+        self.model.load_state_dict(torch.load(best_path))
+        save_best_checkpoint(self.model, checkpoint_dir, self.model_name)
         plt.xlabel("Iteration")
         plt.ylabel("Train Loss")
         plt.plot([i for i in range(len(train_loss))], train_loss)
@@ -409,7 +468,7 @@ class ScopeModel_Combined:
         self.num_labels = 2
         self.scope_method = SCOPE_METHOD
         if train == True:
-            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels)
+            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
         else:
             self.model = torch.load(pretrained_model_path)
         self.device = torch.device(device)
@@ -435,7 +494,7 @@ class ScopeModel_Combined:
             optimizer_grouped_parameters = [{"params": [p for n, p in param_optimizer]}]
         self.optimizer = Adam(optimizer_grouped_parameters, lr=learning_rate)
   
-    def train(self, train_dataloader, valid_dataloader_negation, valid_dataloader_speculation, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3):
+    def train(self, train_dataloader, valid_dataloader_negation, valid_dataloader_speculation, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3, checkpoint_dir = CHECKPOINT_DIR, checkpoint_every = CHECKPOINT_EVERY):
         self.train_dl_name = train_dl_name
         return_dict = {"Task": f"Multitask Scope Resolution - {self.scope_method}",
                        "Model": self.model_name,
@@ -447,11 +506,13 @@ class ScopeModel_Combined:
                        }
         train_loss = []
         valid_loss = []
-        early_stopping = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint.pt')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        best_path = os.path.join(checkpoint_dir, 'best.pt')
+        early_stopping = EarlyStopping(patience=patience, verbose=True, save_path = best_path)
         #early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint2.pt')
 
         loss_fn = CrossEntropyLoss()
-        for _ in tqdm(range(epochs), desc="Epoch"):
+        for epoch in tqdm(range(1, epochs + 1), desc="Epoch"):
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -475,6 +536,8 @@ class ScopeModel_Combined:
                 self.optimizer.step()
                 self.model.zero_grad()
             print("Train loss: {}".format(tr_loss/nb_tr_steps))
+            if checkpoint_every and epoch % checkpoint_every == 0:
+                save_checkpoint(self.model, os.path.join(checkpoint_dir, f"epoch_{epoch:03d}"), self.model_name)
             
             self.model.eval()
             
@@ -660,8 +723,8 @@ class ScopeModel_Combined:
                 print("Early stopping")
                 break
         
-        self.model.load_state_dict(torch.load('checkpoint.pt'))
-        #self.model_2.load_state_dict(torch.load('checkpoint2.pt'))
+        self.model.load_state_dict(torch.load(best_path))
+        save_best_checkpoint(self.model, checkpoint_dir, self.model_name)
         plt.xlabel("Iteration")
         plt.ylabel("Train Loss")
         plt.plot([i for i in range(len(train_loss))], train_loss)
@@ -806,7 +869,7 @@ class CueModel_Separate:
             optimizer_grouped_parameters = [{"params": [p for n, p in param_optimizer]}]
         self.optimizer = Adam(optimizer_grouped_parameters, lr=learning_rate)
 
-    def train(self, train_dataloader, valid_dataloaders, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3):
+    def train(self, train_dataloader, valid_dataloaders, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3, checkpoint_dir = CHECKPOINT_DIR, checkpoint_every = CHECKPOINT_EVERY):
         
         self.train_dl_name = train_dl_name
         return_dict = {"Task": f"Multidata Cue Detection",
@@ -821,11 +884,14 @@ class CueModel_Separate:
                        "Speculation - Best F1": 0}
         train_loss = []
         valid_loss = []
-        early_stopping_neg = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint.pt')
-        early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint2.pt')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        best_path = os.path.join(checkpoint_dir, 'best_negation.pt')
+        spec_best_path = os.path.join(checkpoint_dir, 'best_speculation.pt')
+        early_stopping_neg = EarlyStopping(patience=patience, verbose=True, save_path = best_path)
+        early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = spec_best_path)
         loss_fn_neg = CrossEntropyLoss(weight=torch.Tensor(self.class_weight).to(self.device))
         loss_fn_spec = CrossEntropyLoss(weight=torch.Tensor(self.class_weight).to(self.device))
-        for _ in tqdm(range(epochs), desc="Epoch"):
+        for epoch in tqdm(range(1, epochs + 1), desc="Epoch"):
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -852,6 +918,8 @@ class CueModel_Separate:
                 self.optimizer.step()
                 self.model.zero_grad()
             print("Train loss: {}".format(tr_loss/nb_tr_steps))
+            if checkpoint_every and epoch % checkpoint_every == 0:
+                save_checkpoint(self.model, os.path.join(checkpoint_dir, f"epoch_{epoch:03d}"), self.model_name)
             
             self.model.eval()
             eval_loss, eval_accuracy, eval_scope_accuracy, eval_positive_cue_accuracy = 0, 0, 0, 0
@@ -1006,8 +1074,11 @@ class CueModel_Separate:
             pred_flat = [int(i!=3) for i in pred_flat]
             print("F1-Score Cue_No Cue: {}".format(f1_score(labels_flat,pred_flat, average='weighted')))'''
             
-        self.model.load_state_dict(torch.load('checkpoint.pt'))
-        self.model_2.load_state_dict(torch.load('checkpoint2.pt'))
+        self.model.load_state_dict(torch.load(best_path))
+        self.model_2.load_state_dict(torch.load(spec_best_path))
+        # model holds the best-negation weights, model_2 the best-speculation ones.
+        save_best_checkpoint(self.model, checkpoint_dir, self.model_name, task='negation')
+        save_best_checkpoint(self.model_2, checkpoint_dir, self.model_name, task='speculation')
         plt.xlabel("Iteration")
         plt.ylabel("Train Loss")
         plt.plot([i for i in range(len(train_loss))], train_loss)
@@ -1177,8 +1248,8 @@ class ScopeModel_Separate:
         self.num_labels = 2
         self.scope_method = SCOPE_METHOD
         if train == True:
-            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels)
-            self.model_2 = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels)
+            self.model = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
+            self.model_2 = AutoModelForTokenClassification.from_pretrained(SCOPE_MODEL, num_labels=self.num_labels, id2label=SCOPE_LABELS, label2id={v: k for k, v in SCOPE_LABELS.items()})
         else:
             self.model = torch.load(pretrained_model_path)
         self.device = torch.device(device)
@@ -1204,7 +1275,7 @@ class ScopeModel_Separate:
             optimizer_grouped_parameters = [{"params": [p for n, p in param_optimizer]}]
         self.optimizer = Adam(optimizer_grouped_parameters, lr=learning_rate)
   
-    def train(self, train_dataloader, valid_dataloader_negation, valid_dataloader_speculation, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3):
+    def train(self, train_dataloader, valid_dataloader_negation, valid_dataloader_speculation, train_dl_name, val_dl_name, epochs = 5, max_grad_norm = 1.0, patience = 3, checkpoint_dir = CHECKPOINT_DIR, checkpoint_every = CHECKPOINT_EVERY):
         self.train_dl_name = train_dl_name
         return_dict = {"Task": f"Multitask Scope Resolution - {self.scope_method}",
                        "Model": self.model_name,
@@ -1218,11 +1289,14 @@ class ScopeModel_Separate:
                        "Speculation - Best F1": 0}
         train_loss = []
         valid_loss = []
-        early_stopping_neg = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint.pt')
-        early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = 'checkpoint2.pt')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        best_path = os.path.join(checkpoint_dir, 'best_negation.pt')
+        spec_best_path = os.path.join(checkpoint_dir, 'best_speculation.pt')
+        early_stopping_neg = EarlyStopping(patience=patience, verbose=True, save_path = best_path)
+        early_stopping_spec = EarlyStopping(patience=patience, verbose=True, save_path = spec_best_path)
 
         loss_fn = CrossEntropyLoss()
-        for _ in tqdm(range(epochs), desc="Epoch"):
+        for epoch in tqdm(range(1, epochs + 1), desc="Epoch"):
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -1246,6 +1320,8 @@ class ScopeModel_Separate:
                 self.optimizer.step()
                 self.model.zero_grad()
             print("Train loss: {}".format(tr_loss/nb_tr_steps))
+            if checkpoint_every and epoch % checkpoint_every == 0:
+                save_checkpoint(self.model, os.path.join(checkpoint_dir, f"epoch_{epoch:03d}"), self.model_name)
             
             self.model.eval()
             
@@ -1441,8 +1517,11 @@ class ScopeModel_Separate:
                 print("Early stopping")
                 break
         
-        self.model.load_state_dict(torch.load('checkpoint.pt'))
-        self.model_2.load_state_dict(torch.load('checkpoint2.pt'))
+        self.model.load_state_dict(torch.load(best_path))
+        self.model_2.load_state_dict(torch.load(spec_best_path))
+        # model holds the best-negation weights, model_2 the best-speculation ones.
+        save_best_checkpoint(self.model, checkpoint_dir, self.model_name, task='negation')
+        save_best_checkpoint(self.model_2, checkpoint_dir, self.model_name, task='speculation')
         plt.xlabel("Iteration")
         plt.ylabel("Train Loss")
         plt.plot([i for i in range(len(train_loss))], train_loss)

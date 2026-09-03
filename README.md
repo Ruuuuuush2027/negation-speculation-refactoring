@@ -40,6 +40,114 @@ or, if your files live elsewhere:
 python main.py --bioscope-full-papers path/full_papers.xml --sfu path/SFU_Review_Corpus_Negation_Speculation --bioscope-abstracts path/abstracts.xml
 ```
 
+## Checkpoints
+
+Checkpoints are written to `./check_pts/` by default: one every 10 epochs,
+plus the best-validation weights that early stopping tracks. Override with
+`--checkpoint-dir` / `--checkpoint-every` (`0` = only keep the best), or edit
+`CHECKPOINT_DIR` / `CHECKPOINT_EVERY` in `config.py`. Each run gets its own
+sub-directory. The format depends on the model:
+
+- **Scope resolution** models are plain HuggingFace models, so they are
+  saved as HuggingFace folders (config + weights + tokenizer, with
+  `IN_SCOPE` / `OUT_OF_SCOPE` in `id2label`).
+- **Cue detection** models are the custom two-headed
+  `MultiHeadTokenClassifier` (one shared encoder, a negation head and a
+  speculation head), which HuggingFace cannot load, so they are saved as
+  PyTorch `state_dict` files.
+
+```
+check_pts/run1/                       scope resolution         cue detection
+  every N epochs ................... epoch_010/  epoch_020/   epoch_010.pt  epoch_020.pt
+  best validation F1 ............... best.pt + best/          best.pt
+  ('separate' early stopping) ...... best_negation.pt + best/negation/     best_negation.pt
+                                     best_speculation.pt + best/speculation/  best_speculation.pt
+```
+
+`best*.pt` is what gets reloaded for the final test evaluation, exactly as
+the notebook did with its `checkpoint.pt`. Every file/folder is a full copy
+of the weights (~500 MB for `bert-base` / `roberta-base`).
+
+### Loading a scope-resolution checkpoint
+
+The model is a standard `AutoModelForTokenClassification`, but the input has
+to be prepared the way `data.py` does during training: words are
+sub-tokenized one at a time, **no** `[CLS]`/`[SEP]` special tokens are
+added, text is lower-cased for an `uncased` model, and each cue word is
+marked by a `[unused{label+1}]` token in front of it (single-word cue: label
+1 → `[unused2]`; every word of a multi-word cue: label 2 → `[unused3]`; with
+`SCOPE_METHOD = 'local'` a speculation cue's *first* marker is
+`[unused{label+6}]` instead). This is why a plain `pipeline(...)` call on raw
+text would not give meaningful results.
+
+```python
+import torch
+from transformers import AutoModelForTokenClassification, AutoTokenizer
+
+ckpt = "check_pts/run1/best"          # or "check_pts/run1/best/negation" for 'separate'
+model = AutoModelForTokenClassification.from_pretrained(ckpt).eval()
+tokenizer = AutoTokenizer.from_pretrained(ckpt, use_fast=False)
+
+words = "the drug did not reduce fever .".split()   # lower-cased: bert-base-uncased
+cue_word_ids = {3}                                   # "not" is a single-word negation cue
+
+tokens, is_first_subword = [], []
+for i, word in enumerate(words):
+    subwords = tokenizer.tokenize(word)
+    if i in cue_word_ids:                            # marker before each cue sub-word
+        subwords = [s for sub in subwords for s in ("[unused2]", sub)]
+    tokens += subwords
+    is_first_subword += [True] + [False] * (len(subwords) - 1)
+
+input_ids = torch.tensor([tokenizer.convert_tokens_to_ids(tokens)])
+with torch.no_grad():
+    logits = model(input_ids, attention_mask=torch.ones_like(input_ids)).logits[0]
+
+pred = logits.argmax(-1).tolist()
+word_labels = [model.config.id2label[p] for p, first in zip(pred, is_first_subword) if first]
+print(list(zip(words, word_labels)))
+```
+
+(The training/eval code averages the logits of a word's sub-tokens rather
+than taking the first one; see `get_scope_dataloader` in `data.py` and the
+`evaluate` methods in `model.py` for the exact bookkeeping.)
+
+### Loading a cue-detection checkpoint
+
+```python
+import torch
+from transformers import AutoTokenizer
+from config import CUE_MODEL, CUE_LABELS
+from multihead_model import MultiHeadTokenClassifier
+
+model = MultiHeadTokenClassifier(CUE_MODEL, num_labels=5)
+model.load_state_dict(torch.load("check_pts/run1/best.pt", map_location="cpu"))
+model.eval()
+tokenizer = AutoTokenizer.from_pretrained(CUE_MODEL, use_fast=False)
+
+words = "The drug did not reduce fever .".split()   # roberta-base is cased: no lower-casing
+tokens, is_first_subword = [], []
+for word in words:
+    subwords = tokenizer.tokenize(word)
+    tokens += subwords
+    is_first_subword += [True] + [False] * (len(subwords) - 1)
+
+input_ids = torch.tensor([tokenizer.convert_tokens_to_ids(tokens)])
+with torch.no_grad():
+    logits_neg, logits_spec = model(input_ids, attention_mask=torch.ones_like(input_ids))[0]
+
+def to_word_labels(logits):
+    pred = logits[0].argmax(-1).tolist()
+    return [CUE_LABELS[p] for p, first in zip(pred, is_first_subword) if first]
+
+print(list(zip(words, to_word_labels(logits_neg), to_word_labels(logits_spec))))
+```
+
+With the `separate` early-stopping method, load `best_negation.pt` for the
+negation head and `best_speculation.pt` for the speculation head (each file
+contains the whole two-headed model; only the head matching its name was
+selected on validation F1).
+
 For scope resolution, pass `--error-analysis` to additionally evaluate the
 trained model on two extra test splits per test dataset: sentences whose
 gold scope is delimited by punctuation (`*_punct`) and the rest

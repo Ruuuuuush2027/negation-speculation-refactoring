@@ -1,8 +1,11 @@
 """Command-line entry point: train and evaluate the cue detection /
 scope resolution models on local BioScope / SFU Review data files."""
 import argparse
+import os
 
 from config import (
+    CHECKPOINT_DIR,
+    CHECKPOINT_EVERY,
     EARLY_STOPPING_METHOD,
     EPOCHS,
     ERROR_ANALYSIS_FOR_SCOPE,
@@ -35,6 +38,18 @@ def parse_args():
         help="Path to the BioScope abstracts XML file.",
     )
     parser.add_argument(
+        "--checkpoint-dir", default=CHECKPOINT_DIR,
+        help="Directory to save checkpoints into. Each run writes to <dir>/run<N>/: a checkpoint "
+             "every --checkpoint-every epochs plus the best-validation weights. Scope models are "
+             "saved as HuggingFace folders (epoch_NNN/, best/); cue models as state_dict files "
+             "(epoch_NNN.pt, best.pt). See README 'Checkpoints' for how to load them.",
+    )
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=CHECKPOINT_EVERY,
+        help="Save a checkpoint every N epochs (0 = only save best/ at the end). "
+             "Defaults to CHECKPOINT_EVERY from config.py.",
+    )
+    parser.add_argument(
         "--error-analysis", action=argparse.BooleanOptionalAction, default=ERROR_ANALYSIS_FOR_SCOPE,
         help="After scope-resolution training, additionally evaluate on test splits whose gold scope "
              "is delimited by punctuation ('punct') vs. the rest ('no_punct'). "
@@ -52,6 +67,7 @@ def main():
     bioscope_abstracts_data = Data(args.bioscope_abstracts, dataset_name='bioscope', error_analysis=error_analysis)
 
     for run_num in range(NUM_RUNS):
+        run_checkpoint_dir = os.path.join(args.checkpoint_dir, f"run{run_num+1}")
         first_dataset = None
         other_datasets = []
         if 'sfu' in TRAIN_DATASETS:
@@ -99,7 +115,7 @@ def main():
                 model = CueModel_Combined(full_finetuning=True, train=True, learning_rate = INITIAL_LEARNING_RATE)
             else:
                 raise ValueError("EARLY_STOPPING_METHOD must be one of 'separate' and 'combined'")
-            model.train(train_dl, val_dls, epochs=EPOCHS, patience=PATIENCE, train_dl_name = ','.join(TRAIN_DATASETS), val_dl_name = ','.join(TRAIN_DATASETS))
+            model.train(train_dl, val_dls, epochs=EPOCHS, patience=PATIENCE, train_dl_name = ','.join(TRAIN_DATASETS), val_dl_name = ','.join(TRAIN_DATASETS), checkpoint_dir = run_checkpoint_dir, checkpoint_every = args.checkpoint_every)
             for k in test_dataloaders.keys():
                 print(f"Evaluate on {k}:")
                 model.evaluate(test_dataloaders[k], test_dl_name = k)
@@ -174,7 +190,7 @@ def main():
                 model = ScopeModel_Combined(full_finetuning=True, train=True, learning_rate = INITIAL_LEARNING_RATE)
             else:
                 raise ValueError("EARLY_STOPPING_METHOD must be one of 'separate' and 'combined'")
-            model.train(train_dl, neg_val_dl, spec_val_dl, epochs=EPOCHS, patience=PATIENCE, train_dl_name = ','.join(TRAIN_DATASETS), val_dl_name = ','.join(TRAIN_DATASETS))
+            model.train(train_dl, neg_val_dl, spec_val_dl, epochs=EPOCHS, patience=PATIENCE, train_dl_name = ','.join(TRAIN_DATASETS), val_dl_name = ','.join(TRAIN_DATASETS), checkpoint_dir = run_checkpoint_dir, checkpoint_every = args.checkpoint_every)
             for k in neg_test_dataloaders.keys():
                 print(f"Evaluate on {k}:")
                 model.evaluate(neg_test_dataloaders[k], test_dl_name = k, task = 'negation')
