@@ -122,6 +122,15 @@ def parse_args():
              "Defaults to CHECKPOINT_EVERY from config.py.",
     )
     parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Seed numpy and torch before training. data.py draws each train/val/test split "
+             "with np.random.randint and does not record the value, so without this the split "
+             "a run held out cannot be reproduced afterwards -- and evaluate_cue.py / "
+             "evaluate_scope.py can then only score the checkpoint on a fresh split that "
+             "overlaps its training data. Pass the same seed here and to those scripts to "
+             "evaluate on the split this run actually held out.",
+    )
+    parser.add_argument(
         "--error-analysis", action=argparse.BooleanOptionalAction, default=ERROR_ANALYSIS_FOR_SCOPE,
         help="After scope-resolution training, additionally evaluate on test splits whose gold scope "
              "is delimited by punctuation ('punct') vs. the rest ('no_punct'). "
@@ -132,6 +141,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.seed is not None:
+        import numpy as np
+        import torch
+
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     error_analysis = args.error_analysis
     subtask = args.subtask
     train_datasets = args.train_datasets

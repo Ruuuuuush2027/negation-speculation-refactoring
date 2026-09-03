@@ -118,7 +118,45 @@ Two things to know before reading a gap as a failed replication:
   resolution as the F1 of the `IN_SCOPE` class alone and cue detection with
   `f1_cues`, which pools the three cue classes against `NOT_CUE`. This code is
   a port of the authors' own notebook, so it is probably what produced the
-  tables — but the two definitions give different numbers.
+  tables — but the two definitions give different numbers. Scope evaluation
+  now reports both: `evaluate()` returns `Token Macro F1` alongside the
+  `IN_SCOPE` `F1`, so a cell can be compared under either reading.
+
+### Re-evaluating a finished run
+
+`evaluate_cue.py` and `evaluate_scope.py` load one saved checkpoint and run
+the same `evaluate()` per test corpus, collecting the metrics into a table (and
+a `--csv`) instead of leaving them scattered through a training log:
+
+```
+python evaluate_cue.py   --checkpoint check_pts/cue_detection/xlnet-base-cased_BF+BA+SFU_combined/run2/best.pt
+python evaluate_scope.py --checkpoint check_pts/scope_resolution/xlnet-base-cased_BF+BA+SFU_global_combined/run3/best
+```
+
+The backbone, corpora, scope method and early-stopping scheme are read out of
+the checkpoint path; `--model`, `--scope-method`, `--train-datasets` and
+`--early-stopping` override them.
+
+One caveat governs how far these numbers can be trusted. `data.py` draws the
+15% test split with `np.random.randint(1, 2020)` and never records the value,
+so **the split a finished training run held out cannot be reproduced after the
+fact**. For a corpus the checkpoint trained on, a fresh split overlaps that
+run's training sentences and the score comes out optimistic; only a corpus that
+was *not* trained on is a clean test. `--repeats N` re-draws the split N times
+and reports mean ± standard deviation, which at least shows how much of the
+number is split noise.
+
+For runs started from now on, `main.py --seed S` fixes the whole sequence of
+splits. The evaluation scripts draw theirs in the same order, so
+
+```
+python main.py --subtask cue_detection --seed 1234 ...
+python evaluate_cue.py --checkpoint .../run2/best.pt --seed 1234 --match-run 2
+```
+
+scores run 2's checkpoint on exactly the data run 2 held out. `--match-run`
+needs the same `--train-datasets` and `--test-datasets` training used, since
+those determine how many splits each run consumes.
 
 To try a different backbone or preprocessing scheme, set `MODEL=` or
 `SCOPE_METHOD=` in the environment (`data.py` and `model.py` bind those at
@@ -321,6 +359,8 @@ For the `separate` early-stopping method there is no single `best/`; use
 | File | Contents |
 |---|---|
 | `main.py` | CLI entry point: loads datasets, runs the train/eval loop |
+| `evaluate_cue.py` | Re-evaluate a saved cue-detection checkpoint per test corpus, tabulating the `f1_cues` P/R/F1 for negation and speculation |
+| `evaluate_scope.py` | Re-evaluate a saved scope-resolution checkpoint per test corpus and task, tabulating token macro F1, IN_SCOPE F1 and scope-level F1 |
 | `config.py` | Hyperparameters and run configuration (`MAX_LEN`, `EPOCHS`, `CUE_MODEL`, ... and an auto-detected `DEVICE`) |
 | `data.py` | `Cues`/`Scopes`/`Data`: BioScope & SFU corpus parsing and `DataLoader` construction |
 | `model.py` | `CueModel_Combined`, `CueModel_Separate`, `ScopeModel_Combined`, `ScopeModel_Separate` — the actual task models |

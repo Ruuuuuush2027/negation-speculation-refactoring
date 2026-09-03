@@ -409,8 +409,10 @@ class CueModel_Combined:
         report_per_class_accuracy(labels_flat_spec, pred_flat_spec)
         print(classification_report(labels_flat_neg, pred_flat_neg))
         print(classification_report(labels_flat_spec, pred_flat_spec))
-        print("Negation: F1-Score Overall: {}".format(f1_score(labels_flat_neg,pred_flat_neg, average='weighted')))
-        print("Speculation: F1-Score Overall: {}".format(f1_score(labels_flat_spec,pred_flat_spec, average='weighted')))
+        f1_weighted_neg = f1_score(labels_flat_neg, pred_flat_neg, average='weighted')
+        f1_weighted_spec = f1_score(labels_flat_spec, pred_flat_spec, average='weighted')
+        print("Negation: F1-Score Overall: {}".format(f1_weighted_neg))
+        print("Speculation: F1-Score Overall: {}".format(f1_weighted_spec))
         p_n,r_n,f1_n = f1_cues(labels_flat_neg, pred_flat_neg)
         p_s,r_s,f1_s = f1_cues(labels_flat_spec, pred_flat_spec)
         return_dict['Negation - F1'] = f1_n
@@ -419,6 +421,15 @@ class CueModel_Combined:
         return_dict['Speculation - F1'] = f1_s
         return_dict['Speculation - Precision'] = p_s
         return_dict['Speculation - Recall'] = r_s
+        # Token-level figures over the same flattened, padding-stripped labels
+        # that f1_cues scores, so an evaluation harness can report accuracy and
+        # the weighted/macro token F1 next to the pooled-cue F1 above.
+        return_dict['Negation - Weighted Token F1'] = f1_weighted_neg
+        return_dict['Speculation - Weighted Token F1'] = f1_weighted_spec
+        return_dict['Negation - Macro Token F1'] = f1_score(labels_flat_neg, pred_flat_neg, average='macro')
+        return_dict['Speculation - Macro Token F1'] = f1_score(labels_flat_spec, pred_flat_spec, average='macro')
+        return_dict['Negation - Token Accuracy'] = sum(1 for l, p in zip(labels_flat_neg, pred_flat_neg) if l == p) / len(labels_flat_neg)
+        return_dict['Speculation - Token Accuracy'] = sum(1 for l, p in zip(labels_flat_spec, pred_flat_spec) if l == p) / len(labels_flat_spec)
 
         return return_dict
 
@@ -644,7 +655,12 @@ class ScopeModel_Combined:
                        "Test Dataset": test_dl_name,
                        "Precision": 0,
                        "Recall": 0,
-                       "F1": 0}
+                       "F1": 0,
+                       "Scope Level - Precision": 0,
+                       "Scope Level - Recall": 0,
+                       "Scope Level - F1": 0,
+                       "Token Macro F1": 0,
+                       "Token Accuracy": 0}
         self.model.eval()
         valid_loss = []
         eval_loss, eval_accuracy, eval_scope_accuracy = 0, 0, 0
@@ -695,9 +711,14 @@ class ScopeModel_Combined:
         print("Validation loss: {}".format(eval_loss))
         print("Validation Accuracy: {}".format(eval_accuracy/nb_eval_steps))
         print("Validation Accuracy Scope Level: {}".format(eval_scope_accuracy/nb_eval_steps))
-        f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='scope')
+        scope_p, scope_r, scope_f1 = f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='scope')
         labels_flat = [l_ii for l in true_labels for l_i in l for l_ii in l_i]
         pred_flat = [p_ii for p in predictions for p_i in p for p_ii in p_i]
+        # The paper's Section 4 describes its scope metric as a "Macro F1
+        # Average (Token-level)", which is this; the IN_SCOPE-only F1 below is
+        # what the authors' code reports. Both are returned so a replication can
+        # be lined up against the tables under either reading.
+        token_macro_f1 = f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='token', average='macro')
         classification_dict = classification_report(labels_flat, pred_flat, output_dict= True)
         p = classification_dict["1"]["precision"]
         r = classification_dict["1"]["recall"]
@@ -705,6 +726,11 @@ class ScopeModel_Combined:
         return_dict['Precision'] = p
         return_dict['Recall'] = r
         return_dict['F1'] = f1
+        return_dict['Scope Level - Precision'] = scope_p
+        return_dict['Scope Level - Recall'] = scope_r
+        return_dict['Scope Level - F1'] = scope_f1
+        return_dict['Token Macro F1'] = token_macro_f1
+        return_dict['Token Accuracy'] = classification_dict["accuracy"]
         print("Classification Report:")
         print(classification_report(labels_flat, pred_flat))
         return return_dict
@@ -1004,8 +1030,10 @@ class CueModel_Separate:
         report_per_class_accuracy(labels_flat_spec, pred_flat_spec)
         print(classification_report(labels_flat_neg, pred_flat_neg))
         print(classification_report(labels_flat_spec, pred_flat_spec))
-        print("Negation: F1-Score Overall: {}".format(f1_score(labels_flat_neg,pred_flat_neg, average='weighted')))
-        print("Speculation: F1-Score Overall: {}".format(f1_score(labels_flat_spec,pred_flat_spec, average='weighted')))
+        f1_weighted_neg = f1_score(labels_flat_neg, pred_flat_neg, average='weighted')
+        f1_weighted_spec = f1_score(labels_flat_spec, pred_flat_spec, average='weighted')
+        print("Negation: F1-Score Overall: {}".format(f1_weighted_neg))
+        print("Speculation: F1-Score Overall: {}".format(f1_weighted_spec))
         p_n,r_n,f1_n = f1_cues(labels_flat_neg, pred_flat_neg)
         p_s,r_s,f1_s = f1_cues(labels_flat_spec, pred_flat_spec)
         return_dict['Negation - F1'] = f1_n
@@ -1014,6 +1042,15 @@ class CueModel_Separate:
         return_dict['Speculation - F1'] = f1_s
         return_dict['Speculation - Precision'] = p_s
         return_dict['Speculation - Recall'] = r_s
+        # Token-level figures over the same flattened, padding-stripped labels
+        # that f1_cues scores, so an evaluation harness can report accuracy and
+        # the weighted/macro token F1 next to the pooled-cue F1 above.
+        return_dict['Negation - Weighted Token F1'] = f1_weighted_neg
+        return_dict['Speculation - Weighted Token F1'] = f1_weighted_spec
+        return_dict['Negation - Macro Token F1'] = f1_score(labels_flat_neg, pred_flat_neg, average='macro')
+        return_dict['Speculation - Macro Token F1'] = f1_score(labels_flat_spec, pred_flat_spec, average='macro')
+        return_dict['Negation - Token Accuracy'] = sum(1 for l, p in zip(labels_flat_neg, pred_flat_neg) if l == p) / len(labels_flat_neg)
+        return_dict['Speculation - Token Accuracy'] = sum(1 for l, p in zip(labels_flat_spec, pred_flat_spec) if l == p) / len(labels_flat_spec)
 
         return return_dict
 
@@ -1256,7 +1293,12 @@ class ScopeModel_Separate:
                        "Test Dataset": test_dl_name,
                        "Precision": 0,
                        "Recall": 0,
-                       "F1": 0}
+                       "F1": 0,
+                       "Scope Level - Precision": 0,
+                       "Scope Level - Recall": 0,
+                       "Scope Level - F1": 0,
+                       "Token Macro F1": 0,
+                       "Token Accuracy": 0}
         self.model.eval()
         self.model_2.eval()
         valid_loss = []
@@ -1312,9 +1354,12 @@ class ScopeModel_Separate:
         print("Validation loss: {}".format(eval_loss))
         print("Validation Accuracy: {}".format(eval_accuracy/nb_eval_steps))
         print("Validation Accuracy Scope Level: {}".format(eval_scope_accuracy/nb_eval_steps))
-        f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='scope')
+        scope_p, scope_r, scope_f1 = f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='scope')
         labels_flat = [l_ii for l in true_labels for l_i in l for l_ii in l_i]
         pred_flat = [p_ii for p in predictions for p_i in p for p_ii in p_i]
+        # See ScopeModel_Combined.evaluate: macro token F1 is the metric the
+        # paper's prose describes, IN_SCOPE-only F1 the one its code reports.
+        token_macro_f1 = f1_scope([j for i in true_labels for j in i], [j for i in predictions for j in i], level='token', average='macro')
         classification_dict = classification_report(labels_flat, pred_flat, output_dict= True)
         p = classification_dict["1"]["precision"]
         r = classification_dict["1"]["recall"]
@@ -1322,6 +1367,11 @@ class ScopeModel_Separate:
         return_dict['Precision'] = p
         return_dict['Recall'] = r
         return_dict['F1'] = f1
+        return_dict['Scope Level - Precision'] = scope_p
+        return_dict['Scope Level - Recall'] = scope_r
+        return_dict['Scope Level - F1'] = scope_f1
+        return_dict['Token Macro F1'] = token_macro_f1
+        return_dict['Token Accuracy'] = classification_dict["accuracy"]
         print("Classification Report:")
         print(classification_report(labels_flat, pred_flat))
         return return_dict
