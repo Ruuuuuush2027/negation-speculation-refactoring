@@ -1,43 +1,8 @@
-"""End-to-end negation/speculation pipeline: text in, cues and scopes out.
+"""
+A pipeline for loading cue and scope models and do inference
 
-`get_cue_and_scope(text)` runs the two subtasks back to back. The cue model
-labels every word of the sentence as a negation and a speculation cue; those
-predictions are then reshaped into the one-cue-at-a-time form the scope model
-expects (cue markers inserted, `[SEP] <task>` suffix appended under the global
-preprocessing scheme) and the scope model labels every word IN_SCOPE /
-OUT_OF_SCOPE for each detected cue separately.
-
-Both models are loaded once, at import time, from the checkpoints named below.
-Override them with the CUE_CHECKPOINT / SCOPE_CHECKPOINT environment variables
-before importing this module.
-
-    from pipeline import get_cue_and_scope
-    result = get_cue_and_scope("The degree distribution is not maintained.")
-
-Three things worth knowing before trusting the output:
-
-* **Encoding is not a `pipeline(...)` call.** Both models are token classifiers
-  over the word-by-word encoding `data.py` builds by hand -- each word
-  sub-tokenized on its own, no [CLS]/[SEP] special tokens, a word's label being
-  the argmax of the mean of its sub-token logits. `_encode` below reproduces
-  that; see the README's "Using the trained models".
-
-* **Under XLNet the cue markers are invisible to the rest of the sentence.**
-  `[unused*]` is not in the XLNet vocabulary, so every marker maps to `<unk>`
-  (id 0) and the `input_ids > 0` attention mask then hides it. This is how the
-  paper's XLNet scope numbers were produced and is kept deliberately (README,
-  "The two configurations"), but it means that for a sentence with two cues of
-  the same type the scope model has no explicit signal for *which* cue it is
-  being asked about, and the two answers will look nearly identical. Under a
-  BERT checkpoint the markers are real tokens and this does not apply.
-
-* **Cue instances are reconstructed heuristically.** The cue model emits one
-  label per word for the whole sentence, so a sentence's cues arrive merged.
-  Each CUE/AFFIX_CUE word becomes its own cue; each contiguous run of
-  MULTIWORD_CUE words becomes one. A discontinuous multiword cue ("neither ...
-  nor") therefore comes back as two cues, and two adjacent multiword cues as
-  one. The corpora keep the cues separate, so training data does not have this
-  ambiguity -- only inference does.
+from pipeline import get_cue_and_scope
+result = get_cue_and_scope("The degree distribution is not maintained.")
 """
 import os
 import re
@@ -55,10 +20,6 @@ SCOPE_CHECKPOINT = os.environ.get(
     "check_pts/scope_resolution/xlnet-base-cased_BF+BA+SFU_global_combined/run3/best",
 )
 
-# The backbone and the cue-marker scheme have to match the checkpoints, and
-# config.py binds both at import time -- so they are read out of the checkpoint
-# paths and put in the environment before config is imported. (These two
-# helpers only touch the standard library, so importing them here is safe.)
 from evaluate_cue import infer_from_path as _infer_cue_path
 from evaluate_scope import infer_from_path as _infer_scope_path
 
@@ -268,7 +229,7 @@ def _cue_instances(labels):
     return instances
 
 
-def get_cue_and_scope(text, words=None):
+def get_cue_and_scope(text, words=None, debug = False):
     """Detect negation and speculation cues in `text`, then resolve each scope.
 
     text:  the sentence. One sentence at a time -- both models were trained on
@@ -295,6 +256,12 @@ def get_cue_and_scope(text, words=None):
     `cues` is empty when no cue is found, and the scope model is not run at all
     in that case -- scope resolution is defined relative to a cue.
     """
+    if debug:
+        print(f"get_cue_and_scope: text={text}")
+        print(f"cue model:   {CUE_MODEL} <- {CUE_CHECKPOINT}")
+        print(f"scope model: {SCOPE_MODEL} ({SCOPE_METHOD}) <- {SCOPE_CHECKPOINT}")
+        print(f"device:      {DEVICE}\n")
+
     words = list(words) if words is not None else _simple_tokenize(text)
     if not words:
         return {"text": text, "words": [], "cue_label_ids": {t: [] for t in TASKS},
@@ -351,28 +318,3 @@ def format_result(result):
         ))
         lines.append(f"  scope words: {cue['scope_words']}")
     return "\n".join(lines)
-
-
-def main():
-    print(f"cue model:   {CUE_MODEL} <- {CUE_CHECKPOINT}")
-    print(f"scope model: {SCOPE_MODEL} ({SCOPE_METHOD}) <- {SCOPE_CHECKPOINT}")
-    print(f"device:      {DEVICE}\n")
-
-    examples = [
-        # Negation. From BioScope full papers; its gold negation scope is
-        # "no likely tRNA of the novel amino acid was detected".
-        "They analyzed 146 prokaryotic genomes , but no likely tRNA of the "
-        "novel amino acid was detected .",
-        # Speculation ("should", "may") and negation ("not") in one sentence.
-        "It should be noted that the degree distribution is not maintained .",
-        # No cue at all: `cues` comes back empty and the scope model never runs.
-        "The samples were incubated for thirty minutes .",
-    ]
-    for text in examples:
-        print("=" * 78)
-        print(format_result(get_cue_and_scope(text)))
-        print()
-
-
-if __name__ == "__main__":
-    main()
