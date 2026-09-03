@@ -70,6 +70,29 @@ def save_best_checkpoint(model, checkpoint_dir, model_name, task=None):
     path = os.path.join(checkpoint_dir, 'best') if task is None else os.path.join(checkpoint_dir, 'best', task)
     save_checkpoint(model, path, model_name)
 
+def word_level_predictions(logits, word_mask, attention_mask=None):
+    """Collapse per-sub-word logits into one predicted label per word.
+
+    ``word_mask`` is 1 on the first sub-word of every word and 0 on its
+    continuation sub-words (built in data.py); ``attention_mask`` is 0 on
+    padding, which is skipped. A word's label is the argmax of the mean of
+    the logits of all of its sub-words.
+    """
+    preds = []
+    current = []
+    for idx, (logit, first) in enumerate(zip(logits, word_mask)):
+        if attention_mask is not None and attention_mask[idx] == 0:
+            continue
+        if first == 1:
+            if current:
+                preds.append(int(np.argmax(np.mean(current, axis=0))))
+            current = [logit]
+        elif current:
+            current.append(logit)
+    if current:
+        preds.append(int(np.argmax(np.mean(current, axis=0))))
+    return preds
+
 class CueModel_Combined:
     def __init__(self, full_finetuning = True, train = False, pretrained_model_path = 'Cue_Detection.pickle', device = DEVICE, learning_rate = 3e-5, class_weight = [100, 100, 100, 1, 0], num_labels = 5):
         self.model_name = CUE_MODEL
@@ -185,61 +208,12 @@ class CueModel_Combined:
                     actual_logits_spec = []
                     actual_label_ids_spec = []
                     
-                    for l_n,lid_n,l_s,lid_s,m in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks):
-                        
+                    attention = b_input_mask.to('cpu').numpy()
+                    for l_n,lid_n,l_s,lid_s,m,a in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks, attention):
                         actual_label_ids_neg.append([i for i,j in zip(lid_n, m) if j==1])
                         actual_label_ids_spec.append([i for i,j in zip(lid_s, m) if j==1])
-
-                        curr_preds_n = []
-                        my_logits_n = []
-                        curr_preds_s = []
-                        my_logits_s = []
-                        in_split = 0
-
-                        for i_n, i_s, j in zip(l_n, l_s, m):
-                            if j==1:
-                                if in_split == 1:
-                                    if len(my_logits_n)>0:
-                                        curr_preds_n.append(my_logits_n[-1])
-                                    mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                                    if len(my_logits_s)>0:
-                                        curr_preds_s.append(my_logits_s[-1])
-                                    mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                                    if len(my_logits_n)>0:
-                                        my_logits_n[-1] = mode_pred_n
-                                    else:
-                                        my_logits_n.append(mode_pred_n)
-                                    if len(my_logits_s)>0:
-                                        my_logits_s[-1] = mode_pred_s
-                                    else:
-                                        my_logits_s.append(mode_pred_s)
-                                    curr_preds_n = []
-                                    curr_preds_s = []
-                                    in_split = 0
-                                my_logits_n.append(np.argmax(i_n))
-                                my_logits_s.append(np.argmax(i_s))
-
-                            if j==0:
-                                curr_preds_n.append(i_n)
-                                curr_preds_s.append(i_s)
-                                in_split = 1
-                        if in_split == 1:
-                            if len(my_logits_n)>0:
-                                curr_preds_n.append(my_logits_n[-1])
-                            mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                            if len(my_logits_s)>0:
-                                curr_preds_s.append(my_logits_s[-1])
-                            mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                            if len(my_logits_n)>0:
-                                my_logits_n[-1] = mode_pred_n
-                            else:
-                                my_logits_n.append(mode_pred_n)
-                            if len(my_logits_s)>0:
-                                my_logits_s[-1] = mode_pred_s
-                            else:
-                                my_logits_s.append(mode_pred_s)
-                        actual_logits_neg.append(my_logits_n)
-                        actual_logits_spec.append(my_logits_s)
+                        actual_logits_neg.append(word_level_predictions(l_n, m, a))
+                        actual_logits_spec.append(word_level_predictions(l_s, m, a))
                         
                     logits_neg = actual_logits_neg
                     label_ids_neg = actual_label_ids_neg
@@ -357,61 +331,12 @@ class CueModel_Combined:
             actual_logits_spec = []
             actual_label_ids_spec = []
 
-            for l_n,lid_n,l_s,lid_s,m in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks):
-                    
+            attention = b_input_mask.to('cpu').numpy()
+            for l_n,lid_n,l_s,lid_s,m,a in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks, attention):
                 actual_label_ids_neg.append([i for i,j in zip(lid_n, m) if j==1])
                 actual_label_ids_spec.append([i for i,j in zip(lid_s, m) if j==1])
-
-                curr_preds_n = []
-                my_logits_n = []
-                curr_preds_s = []
-                my_logits_s = []
-                in_split = 0
-
-                for i_n, i_s, j in zip(l_n, l_s, m):
-                    if j==1:
-                        if in_split == 1:
-                            if len(my_logits_n)>0:
-                                curr_preds_n.append(my_logits_n[-1])
-                            mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                            if len(my_logits_s)>0:
-                                curr_preds_s.append(my_logits_s[-1])
-                            mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                            if len(my_logits_n)>0:
-                                my_logits_n[-1] = mode_pred_n
-                            else:
-                                my_logits_n.append(mode_pred_n)
-                            if len(my_logits_s)>0:
-                                my_logits_s[-1] = mode_pred_s
-                            else:
-                                my_logits_s.append(mode_pred_s)
-                            curr_preds_n = []
-                            curr_preds_s = []
-                            in_split = 0
-                        my_logits_n.append(np.argmax(i_n))
-                        my_logits_s.append(np.argmax(i_s))
-
-                    if j==0:
-                        curr_preds_n.append(i_n)
-                        curr_preds_s.append(i_s)
-                        in_split = 1
-                if in_split == 1:
-                    if len(my_logits_n)>0:
-                        curr_preds_n.append(my_logits_n[-1])
-                    mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                    if len(my_logits_s)>0:
-                        curr_preds_s.append(my_logits_s[-1])
-                    mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                    if len(my_logits_n)>0:
-                        my_logits_n[-1] = mode_pred_n
-                    else:
-                        my_logits_n.append(mode_pred_n)
-                    if len(my_logits_s)>0:
-                        my_logits_s[-1] = mode_pred_s
-                    else:
-                        my_logits_s.append(mode_pred_s)
-                actual_logits_neg.append(my_logits_n)
-                actual_logits_spec.append(my_logits_s)
+                actual_logits_neg.append(word_level_predictions(l_n, m, a))
+                actual_logits_spec.append(word_level_predictions(l_s, m, a))
                 
             logits_neg = actual_logits_neg
             label_ids_neg = actual_label_ids_neg
@@ -567,39 +492,10 @@ class ScopeModel_Combined:
                 actual_logits = []
                 actual_label_ids = []
                 
-                for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                        
+                attention = b_input_mask.to('cpu').numpy()
+                for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                     actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                    my_logits = []
-                    curr_preds = []
-                    in_split = 0
-                    for i,j,k in zip(l,m, b_ii):
-                        '''if k == 0:
-                            break'''
-                        if j==1:
-                            if in_split == 1:
-                                if len(my_logits)>0:
-                                    curr_preds.append(my_logits[-1])
-                                mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                                if len(my_logits)>0:
-                                    my_logits[-1] = mode_pred
-                                else:
-                                    my_logits.append(mode_pred)
-                                curr_preds = []
-                                in_split = 0
-                            my_logits.append(np.argmax(i))
-                        if j==0:
-                            curr_preds.append(i)
-                            in_split = 1
-                    if in_split == 1:
-                        if len(my_logits)>0:
-                            curr_preds.append(my_logits[-1])
-                        mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                        if len(my_logits)>0:
-                            my_logits[-1] = mode_pred
-                        else:
-                            my_logits.append(mode_pred)
-                    actual_logits.append(my_logits)
+                    actual_logits.append(word_level_predictions(l, m, a))
                     
                 predictions_negation.append(actual_logits)
                 true_labels_negation.append(actual_label_ids)    
@@ -650,39 +546,10 @@ class ScopeModel_Combined:
                 actual_logits = []
                 actual_label_ids = []
                 
-                for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                        
+                attention = b_input_mask.to('cpu').numpy()
+                for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                     actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                    my_logits = []
-                    curr_preds = []
-                    in_split = 0
-                    for i,j,k in zip(l,m, b_ii):
-                        '''if k == 0:
-                            break'''
-                        if j==1:
-                            if in_split == 1:
-                                if len(my_logits)>0:
-                                    curr_preds.append(my_logits[-1])
-                                mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                                if len(my_logits)>0:
-                                    my_logits[-1] = mode_pred
-                                else:
-                                    my_logits.append(mode_pred)
-                                curr_preds = []
-                                in_split = 0
-                            my_logits.append(np.argmax(i))
-                        if j==0:
-                            curr_preds.append(i)
-                            in_split = 1
-                    if in_split == 1:
-                        if len(my_logits)>0:
-                            curr_preds.append(my_logits[-1])
-                        mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                        if len(my_logits)>0:
-                            my_logits[-1] = mode_pred
-                        else:
-                            my_logits.append(mode_pred)
-                    actual_logits.append(my_logits)
+                    actual_logits.append(word_level_predictions(l, m, a))
                     
                 predictions_speculation.append(actual_logits)
                 true_labels_speculation.append(actual_label_ids)    
@@ -771,39 +638,10 @@ class ScopeModel_Combined:
             actual_logits = []
             actual_label_ids = []
             
-            for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                    
+            attention = b_input_mask.to('cpu').numpy()
+            for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                 actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                my_logits = []
-                curr_preds = []
-                in_split = 0
-                for i,j,k in zip(l,m,b_ii):
-                    '''if k == 0:
-                        break'''
-                    if j==1:
-                        if in_split == 1:
-                            if len(my_logits)>0:
-                                curr_preds.append(my_logits[-1])
-                            mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                            if len(my_logits)>0:
-                                my_logits[-1] = mode_pred
-                            else:
-                                my_logits.append(mode_pred)
-                            curr_preds = []
-                            in_split = 0
-                        my_logits.append(np.argmax(i))
-                    if j==0:
-                        curr_preds.append(i)
-                        in_split = 1
-                if in_split == 1:
-                    if len(my_logits)>0:
-                        curr_preds.append(my_logits[-1])
-                    mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                    if len(my_logits)>0:
-                        my_logits[-1] = mode_pred
-                    else:
-                        my_logits.append(mode_pred)
-                actual_logits.append(my_logits)
+                actual_logits.append(word_level_predictions(l, m, a))
                 
             predictions.append(actual_logits)
             true_labels.append(actual_label_ids)
@@ -956,61 +794,12 @@ class CueModel_Separate:
                     actual_logits_spec = []
                     actual_label_ids_spec = []
                     
-                    for l_n,lid_n,l_s,lid_s,m in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks):
-                        
+                    attention = b_input_mask.to('cpu').numpy()
+                    for l_n,lid_n,l_s,lid_s,m,a in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks, attention):
                         actual_label_ids_neg.append([i for i,j in zip(lid_n, m) if j==1])
                         actual_label_ids_spec.append([i for i,j in zip(lid_s, m) if j==1])
-
-                        curr_preds_n = []
-                        my_logits_n = []
-                        curr_preds_s = []
-                        my_logits_s = []
-                        in_split = 0
-
-                        for i_n, i_s, j in zip(l_n, l_s, m):
-                            if j==1:
-                                if in_split == 1:
-                                    if len(my_logits_n)>0:
-                                        curr_preds_n.append(my_logits_n[-1])
-                                    mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                                    if len(my_logits_s)>0:
-                                        curr_preds_s.append(my_logits_s[-1])
-                                    mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                                    if len(my_logits_n)>0:
-                                        my_logits_n[-1] = mode_pred_n
-                                    else:
-                                        my_logits_n.append(mode_pred_n)
-                                    if len(my_logits_s)>0:
-                                        my_logits_s[-1] = mode_pred_s
-                                    else:
-                                        my_logits_s.append(mode_pred_s)
-                                    curr_preds_n = []
-                                    curr_preds_s = []
-                                    in_split = 0
-                                my_logits_n.append(np.argmax(i_n))
-                                my_logits_s.append(np.argmax(i_s))
-
-                            if j==0:
-                                curr_preds_n.append(i_n)
-                                curr_preds_s.append(i_s)
-                                in_split = 1
-                        if in_split == 1:
-                            if len(my_logits_n)>0:
-                                curr_preds_n.append(my_logits_n[-1])
-                            mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                            if len(my_logits_s)>0:
-                                curr_preds_s.append(my_logits_s[-1])
-                            mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                            if len(my_logits_n)>0:
-                                my_logits_n[-1] = mode_pred_n
-                            else:
-                                my_logits_n.append(mode_pred_n)
-                            if len(my_logits_s)>0:
-                                my_logits_s[-1] = mode_pred_s
-                            else:
-                                my_logits_s.append(mode_pred_s)
-                        actual_logits_neg.append(my_logits_n)
-                        actual_logits_spec.append(my_logits_s)
+                        actual_logits_neg.append(word_level_predictions(l_n, m, a))
+                        actual_logits_spec.append(word_level_predictions(l_s, m, a))
                         
                     logits_neg = actual_logits_neg
                     label_ids_neg = actual_label_ids_neg
@@ -1137,61 +926,12 @@ class CueModel_Separate:
             actual_logits_spec = []
             actual_label_ids_spec = []
 
-            for l_n,lid_n,l_s,lid_s,m in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks):
-                    
+            attention = b_input_mask.to('cpu').numpy()
+            for l_n,lid_n,l_s,lid_s,m,a in zip(logits_neg, label_ids_neg, logits_spec, label_ids_spec, mymasks, attention):
                 actual_label_ids_neg.append([i for i,j in zip(lid_n, m) if j==1])
                 actual_label_ids_spec.append([i for i,j in zip(lid_s, m) if j==1])
-
-                curr_preds_n = []
-                my_logits_n = []
-                curr_preds_s = []
-                my_logits_s = []
-                in_split = 0
-
-                for i_n, i_s, j in zip(l_n, l_s, m):
-                    if j==1:
-                        if in_split == 1:
-                            if len(my_logits_n)>0:
-                                curr_preds_n.append(my_logits_n[-1])
-                            mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                            if len(my_logits_s)>0:
-                                curr_preds_s.append(my_logits_s[-1])
-                            mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                            if len(my_logits_n)>0:
-                                my_logits_n[-1] = mode_pred_n
-                            else:
-                                my_logits_n.append(mode_pred_n)
-                            if len(my_logits_s)>0:
-                                my_logits_s[-1] = mode_pred_s
-                            else:
-                                my_logits_s.append(mode_pred_s)
-                            curr_preds_n = []
-                            curr_preds_s = []
-                            in_split = 0
-                        my_logits_n.append(np.argmax(i_n))
-                        my_logits_s.append(np.argmax(i_s))
-
-                    if j==0:
-                        curr_preds_n.append(i_n)
-                        curr_preds_s.append(i_s)
-                        in_split = 1
-                if in_split == 1:
-                    if len(my_logits_n)>0:
-                        curr_preds_n.append(my_logits_n[-1])
-                    mode_pred_n = np.argmax(np.average(np.array(curr_preds_n), axis=0), axis=0)
-                    if len(my_logits_s)>0:
-                        curr_preds_s.append(my_logits_s[-1])
-                    mode_pred_s = np.argmax(np.average(np.array(curr_preds_s), axis=0), axis=0)
-                    if len(my_logits_n)>0:
-                        my_logits_n[-1] = mode_pred_n
-                    else:
-                        my_logits_n.append(mode_pred_n)
-                    if len(my_logits_s)>0:
-                        my_logits_s[-1] = mode_pred_s
-                    else:
-                        my_logits_s.append(mode_pred_s)
-                actual_logits_neg.append(my_logits_n)
-                actual_logits_spec.append(my_logits_s)
+                actual_logits_neg.append(word_level_predictions(l_n, m, a))
+                actual_logits_spec.append(word_level_predictions(l_s, m, a))
                 
             logits_neg = actual_logits_neg
             label_ids_neg = actual_label_ids_neg
@@ -1351,39 +1091,10 @@ class ScopeModel_Separate:
                 actual_logits = []
                 actual_label_ids = []
                 
-                for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                        
+                attention = b_input_mask.to('cpu').numpy()
+                for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                     actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                    my_logits = []
-                    curr_preds = []
-                    in_split = 0
-                    for i,j,k in zip(l,m, b_ii):
-                        '''if k == 0:
-                            break'''
-                        if j==1:
-                            if in_split == 1:
-                                if len(my_logits)>0:
-                                    curr_preds.append(my_logits[-1])
-                                mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                                if len(my_logits)>0:
-                                    my_logits[-1] = mode_pred
-                                else:
-                                    my_logits.append(mode_pred)
-                                curr_preds = []
-                                in_split = 0
-                            my_logits.append(np.argmax(i))
-                        if j==0:
-                            curr_preds.append(i)
-                            in_split = 1
-                    if in_split == 1:
-                        if len(my_logits)>0:
-                            curr_preds.append(my_logits[-1])
-                        mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                        if len(my_logits)>0:
-                            my_logits[-1] = mode_pred
-                        else:
-                            my_logits.append(mode_pred)
-                    actual_logits.append(my_logits)
+                    actual_logits.append(word_level_predictions(l, m, a))
                     
                 predictions_negation.append(actual_logits)
                 true_labels_negation.append(actual_label_ids)    
@@ -1446,39 +1157,10 @@ class ScopeModel_Separate:
                 actual_logits = []
                 actual_label_ids = []
                 
-                for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                        
+                attention = b_input_mask.to('cpu').numpy()
+                for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                     actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                    my_logits = []
-                    curr_preds = []
-                    in_split = 0
-                    for i,j,k in zip(l,m, b_ii):
-                        '''if k == 0:
-                            break'''
-                        if j==1:
-                            if in_split == 1:
-                                if len(my_logits)>0:
-                                    curr_preds.append(my_logits[-1])
-                                mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                                if len(my_logits)>0:
-                                    my_logits[-1] = mode_pred
-                                else:
-                                    my_logits.append(mode_pred)
-                                curr_preds = []
-                                in_split = 0
-                            my_logits.append(np.argmax(i))
-                        if j==0:
-                            curr_preds.append(i)
-                            in_split = 1
-                    if in_split == 1:
-                        if len(my_logits)>0:
-                            curr_preds.append(my_logits[-1])
-                        mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                        if len(my_logits)>0:
-                            my_logits[-1] = mode_pred
-                        else:
-                            my_logits.append(mode_pred)
-                    actual_logits.append(my_logits)
+                    actual_logits.append(word_level_predictions(l, m, a))
                     
                 predictions_speculation.append(actual_logits)
                 true_labels_speculation.append(actual_label_ids)    
@@ -1573,39 +1255,10 @@ class ScopeModel_Separate:
             actual_logits = []
             actual_label_ids = []
             
-            for l,lid,m,b_ii in zip(logits, label_ids, mymasks, b_input_ids):
-                    
+            attention = b_input_mask.to('cpu').numpy()
+            for l,lid,m,a in zip(logits, label_ids, mymasks, attention):
                 actual_label_ids.append([i for i,j in zip(lid, m) if j==1])
-                my_logits = []
-                curr_preds = []
-                in_split = 0
-                for i,j,k in zip(l,m,b_ii):
-                    '''if k == 0:
-                        break'''
-                    if j==1:
-                        if in_split == 1:
-                            if len(my_logits)>0:
-                                curr_preds.append(my_logits[-1])
-                            mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                            if len(my_logits)>0:
-                                my_logits[-1] = mode_pred
-                            else:
-                                my_logits.append(mode_pred)
-                            curr_preds = []
-                            in_split = 0
-                        my_logits.append(np.argmax(i))
-                    if j==0:
-                        curr_preds.append(i)
-                        in_split = 1
-                if in_split == 1:
-                    if len(my_logits)>0:
-                        curr_preds.append(my_logits[-1])
-                    mode_pred = np.argmax(np.average(np.array(curr_preds), axis=0), axis=0)
-                    if len(my_logits)>0:
-                        my_logits[-1] = mode_pred
-                    else:
-                        my_logits.append(mode_pred)
-                actual_logits.append(my_logits)
+                actual_logits.append(word_level_predictions(l, m, a))
                 
             predictions.append(actual_logits)
             true_labels.append(actual_label_ids)
