@@ -104,11 +104,20 @@ def word_level_predictions(logits, word_mask, attention_mask=None):
     continuation sub-words (built in data.py); ``attention_mask`` is 0 on
     padding, which is skipped. A word's label is the argmax of the mean of
     the logits of all of its sub-words.
+
+    A position is skipped only when it is masked AND is not a word start.
+    Under XLNet the scope cue markers map to id 0, so they are attention-masked
+    like padding, yet they carry ``word_mask == 1`` because the marker owns the
+    cue word's prediction slot (the label side keeps every ``word_mask == 1``
+    position). Skipping them produced one prediction fewer per cue and a
+    length mismatch in ``classification_report``. The original notebook emitted
+    exactly one prediction per ``word_mask == 1`` position; this keeps that
+    invariant while still dropping padding.
     """
     preds = []
     current = []
     for idx, (logit, first) in enumerate(zip(logits, word_mask)):
-        if attention_mask is not None and attention_mask[idx] == 0:
+        if attention_mask is not None and attention_mask[idx] == 0 and first == 0:
             continue
         if first == 1:
             if current:
