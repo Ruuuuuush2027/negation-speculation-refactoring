@@ -124,7 +124,7 @@ class CueModel_Combined:
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
-            for step, batch in enumerate(train_dataloader):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch} batches", leave=False)):
                 batch = tuple(t.to(self.device) for t in batch)
                 b_input_ids, b_input_mask, b_labels_neg, b_labels_spec, b_mymasks = batch
                 logits_neg, logits_spec = self.model(b_input_ids, token_type_ids=None,attention_mask=b_input_mask)[0]
@@ -516,7 +516,7 @@ class ScopeModel_Combined:
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
-            for step, batch in enumerate(train_dataloader):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch} batches", leave=False)):
                 batch = tuple(t.to(self.device) for t in batch)
                 b_input_ids, b_input_mask, b_labels, b_mymasks = batch
                 logits = self.model(b_input_ids, token_type_ids=None,
@@ -895,7 +895,7 @@ class CueModel_Separate:
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
-            for step, batch in enumerate(train_dataloader):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch} batches", leave=False)):
                 batch = tuple(t.to(self.device) for t in batch)
                 b_input_ids, b_input_mask, b_labels_neg, b_labels_spec, b_mymasks = batch
                 logits_neg, logits_spec = self.model(b_input_ids, token_type_ids=None,attention_mask=b_input_mask)[0]
@@ -1300,7 +1300,7 @@ class ScopeModel_Separate:
             self.model.train()
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
-            for step, batch in enumerate(train_dataloader):
+            for step, batch in enumerate(tqdm(train_dataloader, desc=f"Epoch {epoch} batches", leave=False)):
                 batch = tuple(t.to(self.device) for t in batch)
                 b_input_ids, b_input_mask, b_labels, b_mymasks = batch
                 logits = self.model(b_input_ids, token_type_ids=None,
