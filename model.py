@@ -162,7 +162,7 @@ class CueModel_Combined:
                 loss.backward()
                 tr_loss += loss.item()
                 if step % 100 == 0:
-                    print(f"Batch {step}, loss {loss.item()}")
+                    tqdm.write(f"Batch {step}, loss {loss.item()}")
                 train_loss.append(loss.item())
                 nb_tr_examples += b_input_ids.size(0)
                 nb_tr_steps += 1
@@ -454,7 +454,7 @@ class ScopeModel_Combined:
                 tr_loss += loss.item()
                 train_loss.append(loss.item())
                 if step%100 == 0:
-                    print(f"Batch {step}, loss {loss.item()}")
+                    tqdm.write(f"Batch {step}, loss {loss.item()}")
                 nb_tr_examples += b_input_ids.size(0)
                 nb_tr_steps += 1
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=max_grad_norm)
@@ -748,7 +748,7 @@ class CueModel_Separate:
                 loss.backward()
                 tr_loss += loss.item()
                 if step % 100 == 0:
-                    print(f"Batch {step}, loss {loss.item()}")
+                    tqdm.write(f"Batch {step}, loss {loss.item()}")
                 train_loss.append(loss.item())
                 nb_tr_examples += b_input_ids.size(0)
                 nb_tr_steps += 1
@@ -1053,7 +1053,7 @@ class ScopeModel_Separate:
                 tr_loss += loss.item()
                 train_loss.append(loss.item())
                 if step%100 == 0:
-                    print(f"Batch {step}, loss {loss.item()}")
+                    tqdm.write(f"Batch {step}, loss {loss.item()}")
                 nb_tr_examples += b_input_ids.size(0)
                 nb_tr_steps += 1
                 torch.nn.utils.clip_grad_norm_(parameters=self.model.parameters(), max_norm=max_grad_norm)
