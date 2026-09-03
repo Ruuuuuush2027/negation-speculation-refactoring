@@ -11,6 +11,7 @@ A command line Python port of `Multitask_Learning_of_Negation_and_Speculation.ip
 | `main.py` | CLI entry point: loads datasets, runs the train/eval loop |
 | `evaluate_cue.py` | Re-evaluate a saved cue-detection checkpoint per test corpus, tabulating the `f1_cues` P/R/F1 for negation and speculation |
 | `evaluate_scope.py` | Re-evaluate a saved scope-resolution checkpoint per test corpus and task, tabulating token macro F1, IN_SCOPE F1 and scope-level F1 |
+| `pipeline.py` | `get_cue_and_scope(text)` — loads both best checkpoints once, then runs cue detection and feeds each detected cue to scope resolution |
 | `config.py` | Hyperparameters and run configuration (`MAX_LEN`, `EPOCHS`, `CUE_MODEL`, ... and an auto-detected `DEVICE`) |
 | `data.py` | `Cues`/`Scopes`/`Data`: BioScope & SFU corpus parsing and `DataLoader` construction |
 | `model.py` | `CueModel_Combined`, `CueModel_Separate`, `ScopeModel_Combined`, `ScopeModel_Separate` — the actual task models |
@@ -148,6 +149,27 @@ of the weights (~500 MB for `bert-base` / `roberta-base`).
 
 ### 6 - Using the trained models
 
+This section is about running the trained models on **new text**. To score one
+of the corpora, don't hand-roll it — `evaluate_cue.py` / `evaluate_scope.py`
+(section 4) already build the dataloaders, load the checkpoint and report the
+metrics.
+
+If you just want the two models chained together, `pipeline.py` already does
+everything below — it loads both best checkpoints once at import, and
+`get_cue_and_scope(text)` returns the per-word cue labels, one scope per
+detected cue, and the extracted cue and scope words:
+
+```python
+from pipeline import get_cue_and_scope
+
+result = get_cue_and_scope("It should be noted that the degree distribution is not maintained .")
+for cue in result["cues"]:
+    print(cue["task"], cue["cue_words"], "->", cue["scope_words"])
+```
+
+Read on for what it is doing underneath, or if you want to drive the models
+yourself.
+
 Both models are token classifiers over a **word-by-word** encoding that
 `data.py` builds by hand: each word is sub-tokenized on its own, **no**
 `[CLS]`/`[SEP]` special tokens are added, and a word's prediction is the argmax
@@ -213,49 +235,60 @@ training used, and under XLNet it is what hides the `<unk>` markers. `encode()`
 has been checked against `data.py` on every scope row of the BioScope
 full-papers corpus under XLNet and BERT, `global` and `local`.
 
-#### Cue detection (default config: XLNet, BF+BA, combined)
+#### Cue detection (trained config: XLNet, BF+BA+SFU, combined)
 
 The cue model is the custom two-headed `MultiHeadTokenClassifier`, so it loads
-from a `state_dict` rather than `from_pretrained`. It takes plain text — no cue
-markers, no task suffix — and returns negation and speculation labels for every
-word in one pass.
+from a `state_dict` rather than `from_pretrained` — `MultiHeadTokenClassifier`
+pulls the backbone's pretrained weights to build the architecture, then the
+checkpoint overwrites them. This is what `evaluate_cue.py`'s `load_model()`
+does. It takes plain text — no cue markers, no task suffix — and returns
+negation and speculation labels for every word in one pass.
 
 ```python
 from transformers import AutoTokenizer
-from config import CUE_MODEL, CUE_LABELS
+from config import CUE_MODEL, CUE_LABELS, DEVICE
 from multihead_model import MultiHeadTokenClassifier
 
-CKPT = "check_pts/cue_detection/xlnet-base-cased_BF+BA_combined/run1/best.pt"
+# The best of the three cue runs by validation F1 (0.9128).
+CKPT = "check_pts/cue_detection/xlnet-base-cased_BF+BA+SFU_combined/run2/best.pt"
 
 model = MultiHeadTokenClassifier(CUE_MODEL, num_labels=5)
 model.load_state_dict(torch.load(CKPT, map_location="cpu"))
-model.eval()
+model.to(DEVICE).eval()
 tokenizer = AutoTokenizer.from_pretrained(CUE_MODEL, use_fast=False)
 lower = "uncased" in CUE_MODEL          # xlnet-base-cased -> False
 
 words = "It should be noted that the degree distribution is not maintained .".split()
 ids, word_of = encode(words, tokenizer, lower)
 
-input_ids = torch.tensor([ids])
+input_ids = torch.tensor([ids]).to(DEVICE)
 with torch.no_grad():
     logits_neg, logits_spec = model(input_ids, attention_mask=(input_ids > 0).long())[0]
 
-neg = per_word(logits_neg[0].numpy(), word_of, len(words))
-spec = per_word(logits_spec[0].numpy(), word_of, len(words))
+neg = per_word(logits_neg[0].cpu().numpy(), word_of, len(words))
+spec = per_word(logits_spec[0].cpu().numpy(), word_of, len(words))
 
 for word, n, s in zip(words, neg, spec):
     if n != 3 or s != 3:                # 3 = NOT_CUE
         print(f"{word:14s} negation={CUE_LABELS[n]:14s} speculation={CUE_LABELS[s]}")
 # a trained checkpoint should print something like:
+# -> should         negation=NOT_CUE       speculation=CUE
 # -> not            negation=CUE           speculation=NOT_CUE
 ```
+
+`CUE_MODEL` is `xlnet-base-cased` by default, which is what these checkpoints
+were trained with. For a checkpoint from a different backbone, set the
+environment variable **before** importing `config` (`os.environ["CUE_MODEL"] =
+...`) — `config.py` binds its values at import time, so assigning to
+`config.CUE_MODEL` afterwards is too late. `evaluate_cue.py` does its argument
+parsing before any project import for exactly this reason.
 
 `CUE_LABELS` is `{0: AFFIX_CUE, 1: CUE, 2: MULTIWORD_CUE, 3: NOT_CUE, 4: PAD}`.
 Label 4 is the padding label and carries a class weight of 0 during training,
 so the model is never trained to predict it and never trained not to — if it
 turns up on a real word, treat it as "no cue" rather than as a prediction.
 
-#### Scope resolution (default config: XLNet, BF+BA, global, combined)
+#### Scope resolution (trained config: XLNet, BF+BA+SFU, global, combined)
 
 The scope model is saved as a HuggingFace folder and loads with the stock
 `AutoModelForTokenClassification` (XLNet is *trained* through a subclass that
@@ -267,11 +300,12 @@ gold cues.
 
 ```python
 from transformers import AutoModelForTokenClassification, AutoTokenizer
-from config import SCOPE_MODEL, SCOPE_METHOD
+from config import DEVICE, SCOPE_MODEL, SCOPE_METHOD
 
-CKPT = "check_pts/scope_resolution/xlnet-base-cased_BF+BA_global_combined/run1/best"
+# The best of the three scope runs by validation F1 (0.9455).
+CKPT = "check_pts/scope_resolution/xlnet-base-cased_BF+BA+SFU_global_combined/run3/best"
 
-model = AutoModelForTokenClassification.from_pretrained(CKPT).eval()
+model = AutoModelForTokenClassification.from_pretrained(CKPT).to(DEVICE).eval()
 tokenizer = AutoTokenizer.from_pretrained(CKPT, use_fast=False)
 lower = "uncased" in SCOPE_MODEL         # xlnet-base-cased -> False
 
@@ -282,9 +316,9 @@ task = "Negation"                        # or "Speculation"
 
 ids, word_of = encode(words, tokenizer, lower, cues=cues, task=task, scope_method=SCOPE_METHOD)
 
-input_ids = torch.tensor([ids])
+input_ids = torch.tensor([ids]).to(DEVICE)
 with torch.no_grad():
-    logits = model(input_ids, attention_mask=(input_ids > 0).long()).logits[0].numpy()
+    logits = model(input_ids, attention_mask=(input_ids > 0).long()).logits[0].cpu().numpy()
 
 n_words = len(words) + (2 if SCOPE_METHOD == "global" else 0)
 pred = per_word(logits, word_of, n_words)[:len(words)]   # drop the "[SEP] Negation" suffix
@@ -299,6 +333,22 @@ The `cues` labels match `CUE_LABELS`: `1` for a single-word cue, `2` on **every*
 word of a multiword cue, `0` for an affix cue. `encode()` handles `global` and
 `local` itself via `scope_method`; always pass `task=`.
 
+Two things this example gets to skip that `evaluate_scope.py` cannot:
+
+- **`SCOPE_METHOD` must match the checkpoint.** `global` is the default and is
+  what these checkpoints were trained with, but a `local` checkpoint fed
+  `global`-style input fails silently — the markers and the `[SEP] <task>`
+  suffix simply differ from what it saw in training. `evaluate_scope.py` reads
+  the scheme out of the checkpoint path (`..._global_combined`) and sets the
+  environment variable before importing `config`; `--scope-method` overrides it.
+- **Loading through `model._scope_model_class()`** (what `evaluate_scope.py`
+  uses, so evaluation runs through the same head as training) returns a plain
+  tuple, so its logits are `model(...)[0]`, not `.logits`. Stock
+  `AutoModelForTokenClassification` is equivalent here because the subclass only
+  adds a dropout layer, which is inactive at eval.
+
 For the `separate` early-stopping method there is no single `best/`; use
 `best/negation/` or `best/speculation/` (scope) or `best_negation.pt` /
-`best_speculation.pt` (cue).
+`best_speculation.pt` (cue) — one model per task, so load the one matching the
+`task` you are asking about. The evaluation scripts resolve these themselves
+from a run directory given `--early-stopping separate`.
